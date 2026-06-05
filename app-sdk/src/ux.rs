@@ -1,5 +1,7 @@
 use core::{ops::Range, panic};
 
+pub mod canvas;
+
 use crate::{
     ecalls,
     ux_generated::{
