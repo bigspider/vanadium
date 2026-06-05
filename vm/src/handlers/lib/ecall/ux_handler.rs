@@ -246,10 +246,16 @@ impl UxHandler {
         Err(CommEcallError::UnhandledEcall)
     }
 
-    /// Draws a single row of raw pixels (already in the device's native
-    /// [`common::ecall_constants::PixelFormat`]) into the screen framebuffer.
+    /// Draws a horizontal band of pixels onto the screen framebuffer.
     ///
-    /// The blit ECALL streams a rectangle row by row to bound the VM's scratch
+    /// `pixels` is the band in the SDK's row-major, left-to-right [`PixelFormat`]
+    /// packing (`h` rows of `stride(w)` bytes). NBGL's `nbgl_frontDrawImage` instead
+    /// consumes its buffer **column-major, right-to-left, top-to-bottom**, packed
+    /// MSB-first (high nibble first for 4BPP) with no per-column padding (see
+    /// `nbgl_driver_drawImage`), so we transpose into that layout here. `y` and `h`
+    /// must be multiples of 4 (an NBGL constraint, enforced by the caller).
+    ///
+    /// The blit ECALL splits a rectangle into bands to bound the VM's scratch
     /// memory; call [`UxHandler::blit_refresh`] once afterwards to push the drawn
     /// region to the panel.
     ///
@@ -258,13 +264,15 @@ impl UxHandler {
     /// not exposed by its generated bindings, so we declare them here ourselves using
     /// the bound NBGL types and constants. The same syscalls drive every screen
     /// model; only the bit depth and color handling differ per `PixelFormat`.
-    pub fn blit_row(
+    pub fn blit_band(
         &mut self,
         x: u32,
         y: u32,
         w: u32,
+        h: u32,
         format: common::ecall_constants::PixelFormat,
         pixels: &[u8],
+        out: &mut [u8],
     ) -> Result<(), CommEcallError> {
         use common::ecall_constants::PixelFormat;
 
@@ -288,35 +296,39 @@ impl UxHandler {
             PixelFormat::Mono1 => (sys::NBGL_BPP_1, sys::BLACK, sys::WHITE as sys::nbgl_color_map_t),
         };
 
-        // `nbgl_frontDrawImage` renders each row X-mirrored relative to our buffer
-        // (NBGL only offers VERTICAL_MIRROR / ROTATE_90, no horizontal mirror), so we
-        // reverse the row here. This runs as native VM code (cheap), bounded by the
-        // row width.
         let w = w as usize;
-        let mut rev = alloc::vec![0u8; pixels.len()];
-        match format {
-            PixelFormat::Gray4 => {
-                for oc in 0..w {
-                    let sc = w - 1 - oc;
-                    let v = if sc % 2 == 0 {
-                        pixels[sc / 2] >> 4
-                    } else {
-                        pixels[sc / 2] & 0x0f
-                    };
-                    if oc % 2 == 0 {
-                        rev[oc / 2] |= v << 4;
-                    } else {
-                        rev[oc / 2] |= v;
+        let h = h as usize;
+        let in_stride = format.stride(w);
+
+        // Transpose row-major (our layout) into NBGL's column-major, right-to-left
+        // layout, into the caller-provided scratch buffer. Pixels are emitted from
+        // the rightmost column, top to bottom, with no padding between columns; this
+        // also yields the correct (un-mirrored) orientation, so no transformation is
+        // needed.
+        let out_len = (w * h * format.bits_per_pixel() + 7) / 8;
+        let out = &mut out[..out_len];
+        out.fill(0);
+        let mut k = 0usize; // index of the pixel being emitted
+        for ox in (0..w).rev() {
+            for oy in 0..h {
+                match format {
+                    PixelFormat::Gray4 => {
+                        let byte = pixels[oy * in_stride + ox / 2];
+                        let v = if ox % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+                        if k % 2 == 0 {
+                            out[k / 2] |= v << 4;
+                        } else {
+                            out[k / 2] |= v;
+                        }
+                    }
+                    PixelFormat::Mono1 => {
+                        let bit = (pixels[oy * in_stride + ox / 8] >> (7 - (ox % 8))) & 1;
+                        if bit == 1 {
+                            out[k / 8] |= 1 << (7 - (k % 8));
+                        }
                     }
                 }
-            }
-            PixelFormat::Mono1 => {
-                for oc in 0..w {
-                    let sc = w - 1 - oc;
-                    if (pixels[sc / 8] >> (7 - (sc % 8))) & 1 == 1 {
-                        rev[oc / 8] |= 1 << (7 - (oc % 8));
-                    }
-                }
+                k += 1;
             }
         }
 
@@ -324,7 +336,7 @@ impl UxHandler {
             x0: x as i16,
             y0: y as i16,
             width: w as u16,
-            height: 1,
+            height: h as u16,
             backgroundColor: background,
             bpp,
         };
@@ -332,7 +344,7 @@ impl UxHandler {
         unsafe {
             nbgl_frontDrawImage(
                 &area,
-                rev.as_ptr(),
+                out.as_ptr(),
                 sys::NO_TRANSFORMATION as sys::nbgl_transformation_t,
                 color_map,
             );

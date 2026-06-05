@@ -1746,19 +1746,49 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
             return Ok(1);
         }
 
-        // Stream the rectangle out of guest memory one row at a time, keeping the VM
-        // scratch buffer bounded to a single row regardless of the frame size (a
-        // full-frame buffer would be ~140 KB on Flex, too much for the SE). Each row
-        // is drawn into the screen framebuffer; a single refresh at the end pushes
-        // the whole rectangle to the panel. `read_buffer` transparently handles
-        // reads that cross outsourced-memory page boundaries.
-        let stride = format.stride(w as usize);
-        let mut row_buf: Vec<u8> = vec![0u8; stride];
-        for row in 0..h {
-            let row_ptr = buffer_ptr.0 + row * (stride as u32);
-            cpu.get_segment::<E>(row_ptr)?
-                .read_buffer(row_ptr, &mut row_buf)?;
-            self.ux_handler.blit_row(x, y + row, w, format, &row_buf)?;
+        // NBGL's low-level image draw requires y0 and height to be multiples of 4.
+        // The SDK aligns full-screen and partial flushes to satisfy this; reject
+        // anything that doesn't so we never feed the driver a malformed area.
+        if y % 4 != 0 || h % 4 != 0 {
+            return Err(CommEcallError::InvalidParameters(
+                "display_blit: y and height must be multiples of 4",
+            ));
+        }
+
+        // Read the rectangle out of guest memory in horizontal bands and draw one
+        // `nbgl_frontDrawImage` per band. NBGL requires the band height to be a
+        // multiple of 4, so we use the smallest such height: 4 rows. This keeps the
+        // VM scratch tiny — the VM heap is only ~24 KB, mostly page caches, so a
+        // full-frame (~140 KB on Flex) or even a large band would OOM. The two
+        // scratch buffers are allocated once and reused across every band.
+        // Since the screen height and `h` are multiples of 4, every band is exactly
+        // 4 rows. `read_buffer` transparently handles reads crossing page boundaries.
+        const BAND_ROWS: usize = 4;
+        let row_stride = format.stride(w as usize);
+        let band_len = BAND_ROWS * row_stride;
+        let out_len = (w as usize * BAND_ROWS * format.bits_per_pixel() + 7) / 8;
+        // Single allocation split into the input (row-major) and output (column-major)
+        // scratch buffers, to avoid heap fragmentation in the tiny VM heap.
+        let mut scratch: Vec<u8> = vec![0u8; band_len + out_len];
+        let (band_buf, out_buf) = scratch.split_at_mut(band_len);
+
+        let mut band_y = 0usize;
+        while band_y < h as usize {
+            let bh = core::cmp::min(BAND_ROWS, h as usize - band_y);
+            let in_len = bh * row_stride;
+            let src = buffer_ptr.0 + (band_y * row_stride) as u32;
+            cpu.get_segment::<E>(src)?
+                .read_buffer(src, &mut band_buf[..in_len])?;
+            self.ux_handler.blit_band(
+                x,
+                y + band_y as u32,
+                w,
+                bh as u32,
+                format,
+                &band_buf[..in_len],
+                out_buf,
+            )?;
+            band_y += bh;
         }
         self.ux_handler.blit_refresh(x, y, w, h, format)?;
         Ok(1)

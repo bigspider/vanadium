@@ -61,8 +61,13 @@ pub fn handler_start_vapp(
     // Based on the total available heap size, we allocate more pages to the caches
     let base_heap_size = crate::BASE_HEAP_SIZE; // smallest heap size, tailored for Nano X
 
-    assert!(crate::HEAP_SIZE >= base_heap_size);
-    let additional_heap = crate::HEAP_SIZE - base_heap_size;
+    // Reserve a little heap (taken away from the page caches) for transient
+    // allocations made by ECALL handlers. The largest of these is the display_blit
+    // band scratch: two ~(SCREEN_WIDTH * 4 / 2)-byte buffers, i.e. ~2 KB on Flex.
+    const ECALL_SCRATCH_RESERVE: usize = 3072;
+
+    assert!(crate::HEAP_SIZE >= base_heap_size + ECALL_SCRATCH_RESERVE);
+    let additional_heap = crate::HEAP_SIZE - base_heap_size - ECALL_SCRATCH_RESERVE;
 
     // compute how many additional pages we can allocate with the extra available heap
     const CACHED_PAGE_SIZE: usize = OutsourcedMemory::<COMM_BUFFER_SIZE>::size_per_page()
