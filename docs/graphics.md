@@ -72,11 +72,26 @@ The VM handler:
 1. validates that `[x, x+w) × [y, y+h)` lies within the device screen
    (`DEVICE_PROPERTY_SCREEN_SIZE`);
 2. validates that `buffer_len == stride(format, w) * h`;
-3. **streams** the rectangle row-by-row out of guest memory (the outsourced/paged
-   memory `read_buffer` already crosses page boundaries, so VM scratch memory stays
-   bounded regardless of frame size);
-4. converts each row to the device's native bit depth and draws it
-   (`nbgl_frontDrawImage` on NBGL devices), then refreshes the dirty rectangle.
+3. reads the rectangle out of guest memory in **horizontal bands** (the
+   outsourced/paged `read_buffer` crosses page boundaries transparently), and for
+   each band draws one `nbgl_frontDrawImage`, then refreshes the dirty rectangle.
+
+The band layout is dictated by two NBGL/hardware constraints that are easy to miss
+(they are documented in the SDK but not enforced by the Speculos reference driver,
+so violating them renders fine in the emulator and wrong on a real device):
+
+- **`y0` and `height` must be multiples of 4.** So bands are aligned to 4 rows; the
+  SDK expands `flush_area` regions to satisfy this. The smallest band is 4 rows.
+- **`nbgl_frontDrawImage` consumes its buffer column-major**, right-to-left,
+  top-to-bottom, packed MSB-first (high nibble first for 4bpp) with no per-column
+  padding (see `nbgl_driver_drawImage`). The SDK framebuffer is row-major, so the VM
+  **transposes** each band into this layout before drawing. (This column-major,
+  right-to-left consumption — not any mirror transformation — is also what makes a
+  naively row-major buffer come out horizontally reversed.)
+
+Band scratch is sized for the minimum (4 rows) and allocated once and reused, since
+the VM heap is tiny (~24 KB, mostly page caches); `start_vapp` reserves a small
+fixed amount of heap (`ECALL_SCRATCH_RESERVE`) from the caches for it.
 
 Because the caller chooses `x/y/w/h`, partial updates ("dirty rectangles") are
 natural and are the main tool for keeping the guest→SE data transfer cheap (a full
@@ -215,21 +230,24 @@ graphics, `display_blit` updates an in-memory virtual framebuffer and:
 
 ## Open questions / risks
 
-- **Transfer cost** of large blits across the encrypted paged-memory boundary —
-  mitigated by dirty-rectangle partial blits; worth measuring with [`bench/`](../bench).
+- **Speed.** A full-screen redraw is slow on the large screens: the framebuffer
+  (~144 KB packed on Flex) lives in guest memory and is paged back from the host to
+  be blitted, and the VM's data page cache is far smaller than the frame, so it
+  thrashes. It works but takes seconds. This is the main thing to improve next.
+  Levers: dirty-rectangle `flush_area` instead of full redraws; a smaller/region
+  canvas; a larger data page cache; or pushing pixels to the device with less
+  copying. Worth measuring with [`bench/`](../bench).
 - **NBGL low-level API**: `nbgl_frontDrawImage` / `nbgl_frontRefreshArea` are BOLOS
   syscalls whose C stubs link into `ledger_secure_sdk_sys` but are not exposed by
   its generated bindings, so the VM declares them itself via `extern "C"`. Verified
-  on Speculos (Flex): `Gray4` + `INVALID_COLOR_MAP` renders correct grayscale.
-  One quirk found and handled: `nbgl_frontDrawImage` draws each row **X-mirrored**
-  relative to the supplied buffer, and NBGL offers no horizontal-mirror
-  transformation (only `VERTICAL_MIRROR` / `ROTATE_90_CLOCKWISE`), so the VM
-  reverses each row horizontally before drawing (confirmed correct on both flex and
-  nano s+). For 1bpp (`Mono1`), NBGL treats the `colorMap` as the *foreground*
-  color and the area's `backgroundColor` as the bit-clear color, so the VM passes
-  foreground = `WHITE`, background = `BLACK`, and uses `BLACK_AND_WHITE_REFRESH`.
-  Open: confirm on real hardware and on stax / apex_p, and whether a refresh mode
-  other than `FULL_COLOR_REFRESH` is preferable for large-screen partial updates.
+  on Speculos (Flex/Nano S+) and on a real Flex + Nano S+ device. The non-obvious
+  constraints (column-major buffer, `y0`/`height` multiple of 4) are described in
+  the handler section above — note they are *not* enforced by Speculos, so the
+  emulator is not sufficient to validate this path. For 1bpp (`Mono1`), NBGL treats
+  the `colorMap` as the *foreground* color and the area's `backgroundColor` as the
+  bit-clear color, so the VM passes foreground = `WHITE`, background = `BLACK`, and
+  uses `BLACK_AND_WHITE_REFRESH`. Open: confirm on stax / apex_p, and whether a
+  refresh mode other than `FULL_COLOR_REFRESH` is preferable for partial updates.
 - **Canvas memory**: storing one byte per pixel in guest RAM is simplest but costs
   ~268 KB for a Stax-sized canvas; packing at the native bit depth halves
   (`Gray4`) or eighths (`Mono1`) it at the cost of slightly more code in
