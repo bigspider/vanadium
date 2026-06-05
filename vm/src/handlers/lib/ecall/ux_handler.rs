@@ -246,6 +246,141 @@ impl UxHandler {
         Err(CommEcallError::UnhandledEcall)
     }
 
+    /// Draws a single row of raw pixels (already in the device's native
+    /// [`common::ecall_constants::PixelFormat`]) into the screen framebuffer.
+    ///
+    /// The blit ECALL streams a rectangle row by row to bound the VM's scratch
+    /// memory; call [`UxHandler::blit_refresh`] once afterwards to push the drawn
+    /// region to the panel.
+    ///
+    /// The low-level `nbgl_frontDrawImage` / `nbgl_frontRefreshArea` entry points are
+    /// BOLOS syscalls whose C stubs are linked into `ledger_secure_sdk_sys` but are
+    /// not exposed by its generated bindings, so we declare them here ourselves using
+    /// the bound NBGL types and constants. The same syscalls drive every screen
+    /// model; only the bit depth and color handling differ per `PixelFormat`.
+    pub fn blit_row(
+        &mut self,
+        x: u32,
+        y: u32,
+        w: u32,
+        format: common::ecall_constants::PixelFormat,
+        pixels: &[u8],
+    ) -> Result<(), CommEcallError> {
+        use common::ecall_constants::PixelFormat;
+
+        extern "C" {
+            fn nbgl_frontDrawImage(
+                area: *const sys::nbgl_area_t,
+                buffer: *const u8,
+                transformation: sys::nbgl_transformation_t,
+                color_map: sys::nbgl_color_map_t,
+            );
+        }
+
+        // For BPP_4 the color_map is INVALID_COLOR_MAP (no remapping, the grayscale
+        // values are used directly). For BPP_1, NBGL interprets the color_map as the
+        // *foreground* color (drawn where a bit is set), while bit-clear pixels take
+        // the area's backgroundColor (see nbgl_types.h). We pack Mono1 with the bit
+        // set for "on"/light pixels, so foreground = WHITE, background = BLACK.
+        const INVALID_COLOR_MAP: sys::nbgl_color_map_t = 0;
+        let (bpp, background, color_map) = match format {
+            PixelFormat::Gray4 => (sys::NBGL_BPP_4, sys::WHITE, INVALID_COLOR_MAP),
+            PixelFormat::Mono1 => (sys::NBGL_BPP_1, sys::BLACK, sys::WHITE as sys::nbgl_color_map_t),
+        };
+
+        // `nbgl_frontDrawImage` renders each row X-mirrored relative to our buffer
+        // (NBGL only offers VERTICAL_MIRROR / ROTATE_90, no horizontal mirror), so we
+        // reverse the row here. This runs as native VM code (cheap), bounded by the
+        // row width.
+        let w = w as usize;
+        let mut rev = alloc::vec![0u8; pixels.len()];
+        match format {
+            PixelFormat::Gray4 => {
+                for oc in 0..w {
+                    let sc = w - 1 - oc;
+                    let v = if sc % 2 == 0 {
+                        pixels[sc / 2] >> 4
+                    } else {
+                        pixels[sc / 2] & 0x0f
+                    };
+                    if oc % 2 == 0 {
+                        rev[oc / 2] |= v << 4;
+                    } else {
+                        rev[oc / 2] |= v;
+                    }
+                }
+            }
+            PixelFormat::Mono1 => {
+                for oc in 0..w {
+                    let sc = w - 1 - oc;
+                    if (pixels[sc / 8] >> (7 - (sc % 8))) & 1 == 1 {
+                        rev[oc / 8] |= 1 << (7 - (oc % 8));
+                    }
+                }
+            }
+        }
+
+        let area = sys::nbgl_area_t {
+            x0: x as i16,
+            y0: y as i16,
+            width: w as u16,
+            height: 1,
+            backgroundColor: background,
+            bpp,
+        };
+
+        unsafe {
+            nbgl_frontDrawImage(
+                &area,
+                rev.as_ptr(),
+                sys::NO_TRANSFORMATION as sys::nbgl_transformation_t,
+                color_map,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Pushes a previously drawn rectangle to the physical panel.
+    pub fn blit_refresh(
+        &mut self,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        format: common::ecall_constants::PixelFormat,
+    ) -> Result<(), CommEcallError> {
+        use common::ecall_constants::PixelFormat;
+
+        extern "C" {
+            fn nbgl_frontRefreshArea(
+                area: *const sys::nbgl_area_t,
+                mode: sys::nbgl_refresh_mode_t,
+                post_refresh: sys::nbgl_post_refresh_t,
+            );
+        }
+
+        let (bpp, mode) = match format {
+            PixelFormat::Gray4 => (sys::NBGL_BPP_4, sys::FULL_COLOR_REFRESH),
+            PixelFormat::Mono1 => (sys::NBGL_BPP_1, sys::BLACK_AND_WHITE_REFRESH),
+        };
+
+        let area = sys::nbgl_area_t {
+            x0: x as i16,
+            y0: y as i16,
+            width: w as u16,
+            height: h as u16,
+            backgroundColor: sys::WHITE,
+            bpp,
+        };
+
+        unsafe {
+            nbgl_frontRefreshArea(&area, mode, sys::POST_REFRESH_FORCE_POWER_ON);
+        }
+
+        Ok(())
+    }
+
     #[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
     pub fn show_page(&mut self, page: &Page) -> Result<(), CommEcallError> {
         match page {

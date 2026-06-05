@@ -84,6 +84,13 @@ compile_error!("Unsupported target OS. Only nanox, nanosplus, stax, and flex are
 
 use device_props::*;
 
+// Native pixel format used by `display_blit` for this device: 1bpp on the small
+// Nano screens, 4bpp grayscale on the larger touch screens.
+#[cfg(any(target_os = "nanox", target_os = "nanosplus"))]
+const NATIVE_PIXEL_FORMAT: PixelFormat = PixelFormat::Mono1;
+#[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
+const NATIVE_PIXEL_FORMAT: PixelFormat = PixelFormat::Gray4;
+
 // BIP32 supports up to 255, but we don't want that many, and it would be very slow anyway
 const MAX_BIP32_PATH: usize = 16;
 
@@ -1707,6 +1714,56 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         Ok(1)
     }
 
+    fn handle_display_blit<E: fmt::Debug>(
+        &mut self,
+        cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        buffer_ptr: GuestPointer,
+        buffer_len: usize,
+        format: u32,
+    ) -> Result<u32, CommEcallError> {
+        let Some(format) = PixelFormat::from_u32(format) else {
+            return Ok(0); // unsupported pixel format
+        };
+
+        // Reject rectangles that fall outside the physical screen.
+        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
+            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
+        {
+            return Ok(0);
+        }
+
+        // The advertised length must match the geometry exactly.
+        if buffer_len != format.buffer_len(w as usize, h as usize) {
+            return Ok(0);
+        }
+
+        // Empty blit is a no-op success.
+        if w == 0 || h == 0 {
+            return Ok(1);
+        }
+
+        // Stream the rectangle out of guest memory one row at a time, keeping the VM
+        // scratch buffer bounded to a single row regardless of the frame size (a
+        // full-frame buffer would be ~140 KB on Flex, too much for the SE). Each row
+        // is drawn into the screen framebuffer; a single refresh at the end pushes
+        // the whole rectangle to the panel. `read_buffer` transparently handles
+        // reads that cross outsourced-memory page boundaries.
+        let stride = format.stride(w as usize);
+        let mut row_buf: Vec<u8> = vec![0u8; stride];
+        for row in 0..h {
+            let row_ptr = buffer_ptr.0 + row * (stride as u32);
+            cpu.get_segment::<E>(row_ptr)?
+                .read_buffer(row_ptr, &mut row_buf)?;
+            self.ux_handler.blit_row(x, y + row, w, format, &row_buf)?;
+        }
+        self.ux_handler.blit_refresh(x, y, w, h, format)?;
+        Ok(1)
+    }
+
     fn handle_get_device_property<E: fmt::Debug>(
         &mut self,
         _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
@@ -1716,6 +1773,7 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
             DEVICE_PROPERTY_ID => Ok(pack_u16(VENDOR_ID, PRODUCT_ID)),
             DEVICE_PROPERTY_SCREEN_SIZE => Ok(pack_u16(SCREEN_WIDTH, SCREEN_HEIGHT)),
             DEVICE_PROPERTY_FEATURES => Ok(0),
+            DEVICE_PROPERTY_PIXEL_FORMAT => Ok(NATIVE_PIXEL_FORMAT as u32),
             _ => Err(CommEcallError::InvalidParameters("Unknown device property")),
         }
     }
@@ -1740,6 +1798,7 @@ fn get_ecall_name(ecall_code: u32) -> String {
         ECALL_XRECV => "xrecv".into(),
         ECALL_PRINT => "print".into(),
         ECALL_GET_EVENT => "get_event".into(),
+        ECALL_DISPLAY_BLIT => "display_blit".into(),
         ECALL_SHOW_PAGE => "show_page".into(),
         ECALL_SHOW_STEP => "show_step".into(),
         ECALL_GET_DEVICE_PROPERTY => "get_device_property".into(),
@@ -1821,6 +1880,18 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
             }
             ECALL_GET_EVENT => {
                 reg!(A0) = self.handle_get_event::<CommEcallError>(cpu, GPreg!(A0))?;
+            }
+            ECALL_DISPLAY_BLIT => {
+                reg!(A0) = self.handle_display_blit::<CommEcallError>(
+                    cpu,
+                    reg!(A0),
+                    reg!(A1),
+                    reg!(A2),
+                    reg!(A3),
+                    GPreg!(A4),
+                    reg!(A5) as usize,
+                    reg!(A6),
+                )?;
             }
 
             ECALL_STORAGE_READ => {
