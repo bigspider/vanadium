@@ -166,6 +166,13 @@ impl Canvas {
             return true;
         }
 
+        // The device blit requires `y` and `height` to be multiples of 4 (an NBGL
+        // constraint), so expand the region vertically to the nearest multiple of 4.
+        // Harmless on the native backend. `x`/`w` have no such constraint.
+        let y_end = ((y + h + 3) & !3).min(self.height);
+        let y = y & !3;
+        let h = y_end - y;
+
         // Fast path: a full-width strip is already contiguous at the canvas stride,
         // so we can blit the backing buffer directly without copying.
         if x == 0 && w == self.width {
