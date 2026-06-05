@@ -36,6 +36,7 @@ enum CliCommand {
     B58Enc(Vec<u8>),
     NPrimes(u32),
     Ux(u8),
+    Draw,
     DeviceProp(u32),
     Print(String),
     Panic(String),
@@ -100,6 +101,7 @@ fn parse_command(line: &str) -> Result<CliCommand, String> {
                 let id = parse_u8(arg).map_err(|e| e.to_string())?;
                 Ok(CliCommand::Ux(id))
             }
+            "draw" => Ok(CliCommand::Draw),
             "deviceprop" => {
                 let arg = tokens
                     .next()
@@ -183,6 +185,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 CliCommand::Ux(id) => {
                     test_client.ux(id).await?;
+                }
+                CliCommand::Draw => {
+                    let (width, height, ok) = test_client.draw().await?;
+                    println!("Drew on a {}x{} screen (ok: {})", width, height, ok);
                 }
                 CliCommand::DeviceProp(property) => {
                     let value = test_client.device_props(property).await?;

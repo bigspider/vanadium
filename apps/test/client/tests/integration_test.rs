@@ -113,3 +113,25 @@ async fn test_deviceprop() {
     let height = screen_size & 0xFFFF;
     assert!(width > 0 && height > 0);
 }
+
+#[tokio::test]
+async fn test_draw() {
+    // Draws a test pattern with embedded-graphics and blits it to the screen.
+    let mut setup = setup().await;
+
+    let (width, height, ok) = setup.client.draw().await.unwrap();
+
+    assert!(ok, "blit should succeed");
+    assert!(width > 0 && height > 0, "canvas must have a non-zero size");
+    // Sanity-check against the known device screen geometries.
+    assert!(
+        matches!(
+            (width, height),
+            // stax | flex | apex_p | nano s+/x
+            (400, 672) | (480, 600) | (300, 400) | (128, 64)
+        ),
+        "unexpected screen size {}x{}",
+        width,
+        height
+    );
+}
