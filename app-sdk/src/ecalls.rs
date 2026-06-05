@@ -130,6 +130,32 @@ forward_to_ecall! {
     ///   `size_of::<EventData>()` (16) bytes.
     pub unsafe fn get_event(data: *mut EventData) -> u32;
 
+    /// Blits a rectangle of pixels from guest memory to the device screen.
+    ///
+    /// # Parameters
+    /// - `x`, `y`: Top-left corner of the destination rectangle, in screen pixels.
+    /// - `w`, `h`: Width and height of the rectangle, in pixels.
+    /// - `buffer`: Pointer to the pixel data, encoded according to `format`.
+    /// - `buffer_len`: Length of `buffer` in bytes. Must equal
+    ///   `PixelFormat::buffer_len(w, h)` for the given `format`.
+    /// - `format`: A [`common::ecall_constants::PixelFormat`] value describing `buffer`.
+    ///
+    /// # Returns
+    /// 1 on success, 0 on error (out-of-bounds rectangle, bad length, or
+    /// unsupported format).
+    ///
+    /// # Safety
+    /// - `buffer` must be a valid pointer to at least `buffer_len` bytes of readable memory.
+    pub unsafe fn display_blit(
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        buffer: *const u8,
+        buffer_len: usize,
+        format: u32,
+    ) -> u32;
+
     /// Reads a 32-byte value from the specified storage slot.
     ///
     /// # Parameters

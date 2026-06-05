@@ -285,6 +285,159 @@ pub fn get_event(data: *mut EventData) -> u32 {
     return EventCode::Ticker as u32;
 }
 
+// ===========================================================================
+// Low-level graphics (display_blit)
+//
+// On the native target the "screen" is a virtual framebuffer kept in memory.
+// Every blit is dumped to a PPM file so it can be inspected without any system
+// dependency; when the optional `gui` feature is enabled it is also mirrored to
+// an embedded-graphics-simulator window.
+// ===========================================================================
+
+// Native virtual screen geometry; mirrors a Stax-sized Gray4 display.
+const NATIVE_SCREEN_WIDTH: usize = 400;
+const NATIVE_SCREEN_HEIGHT: usize = 672;
+
+struct VirtualScreen {
+    width: usize,
+    height: usize,
+    // One byte per pixel, intensity 0..=15 (Gray4). Simpler than packing; the
+    // native target is not memory-constrained.
+    pixels: Vec<u8>,
+}
+
+impl VirtualScreen {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            pixels: vec![0u8; width * height],
+        }
+    }
+
+    // Writes the screen to a PPM (P6) file as 8-bit grayscale.
+    fn dump_ppm(&self, path: &str) -> io::Result<()> {
+        let mut out = Vec::with_capacity(self.width * self.height * 3 + 32);
+        out.extend_from_slice(format!("P6\n{} {}\n255\n", self.width, self.height).as_bytes());
+        for &intensity in &self.pixels {
+            // scale 0..=15 to 0..=255
+            let v = ((intensity as u16) * 255 / 15) as u8;
+            out.extend_from_slice(&[v, v, v]);
+        }
+        std::fs::write(path, out)
+    }
+}
+
+lazy_static! {
+    static ref VIRTUAL_SCREEN: Mutex<VirtualScreen> =
+        Mutex::new(VirtualScreen::new(NATIVE_SCREEN_WIDTH, NATIVE_SCREEN_HEIGHT));
+}
+
+// Decodes the intensity (0..=15) of pixel (col, row) within a blit buffer.
+fn decode_pixel(
+    buffer: &[u8],
+    format: common::ecall_constants::PixelFormat,
+    stride: usize,
+    row: usize,
+    col: usize,
+) -> u8 {
+    use common::ecall_constants::PixelFormat;
+    match format {
+        PixelFormat::Mono1 => {
+            let byte = buffer[row * stride + col / 8];
+            let bit = 7 - (col % 8);
+            if (byte >> bit) & 1 == 1 {
+                15
+            } else {
+                0
+            }
+        }
+        PixelFormat::Gray4 => {
+            let byte = buffer[row * stride + col / 2];
+            if col % 2 == 0 {
+                byte >> 4
+            } else {
+                byte & 0x0f
+            }
+        }
+    }
+}
+
+pub fn display_blit(
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    buffer: *const u8,
+    buffer_len: usize,
+    format: u32,
+) -> u32 {
+    let Some(format) = common::ecall_constants::PixelFormat::from_u32(format) else {
+        return 0;
+    };
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+
+    let mut screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
+
+    // Bounds + length validation (mirrors what the VM handler must enforce).
+    if x.saturating_add(w) > screen.width || y.saturating_add(h) > screen.height {
+        return 0;
+    }
+    let stride = format.stride(w);
+    if buffer_len != format.buffer_len(w, h) {
+        return 0;
+    }
+
+    // SAFETY: caller guarantees [buffer, buffer+buffer_len) is valid and readable.
+    let data = unsafe { std::slice::from_raw_parts(buffer, buffer_len) };
+
+    let screen_width = screen.width;
+    for row in 0..h {
+        for col in 0..w {
+            let intensity = decode_pixel(data, format, stride, row, col);
+            screen.pixels[(y + row) * screen_width + (x + col)] = intensity;
+        }
+    }
+
+    // Persist a viewable copy of the screen.
+    let path = std::env::var("VAPP_SCREEN_PPM").unwrap_or_else(|_| "vapp_screen.ppm".into());
+    let _ = screen.dump_ppm(&path);
+
+    #[cfg(feature = "gui")]
+    gui::present(&screen);
+
+    1
+}
+
+#[cfg(feature = "gui")]
+mod gui {
+    use super::VirtualScreen;
+    use embedded_graphics::pixelcolor::Gray8;
+    use embedded_graphics::prelude::*;
+    use embedded_graphics_simulator::{OutputSettingsBuilder, SimulatorDisplay, Window};
+    use std::sync::Mutex;
+
+    lazy_static::lazy_static! {
+        static ref WINDOW: Mutex<Option<Window>> = Mutex::new(None);
+    }
+
+    pub fn present(screen: &VirtualScreen) {
+        let mut display: SimulatorDisplay<Gray8> =
+            SimulatorDisplay::new(Size::new(screen.width as u32, screen.height as u32));
+        for (i, &intensity) in screen.pixels.iter().enumerate() {
+            let x = (i % screen.width) as i32;
+            let y = (i / screen.width) as i32;
+            let v = ((intensity as u16) * 255 / 15) as u8;
+            let _ = Pixel(Point::new(x, y), Gray8::new(v)).draw(&mut display);
+        }
+        let mut guard = WINDOW.lock().expect("Window mutex poisoned");
+        let window = guard.get_or_insert_with(|| {
+            Window::new("Vanadium V-App", &OutputSettingsBuilder::new().build())
+        });
+        window.update(&display);
+    }
+}
+
 pub fn show_page(page_desc: *const u8, page_desc_len: usize) -> u32 {
     // make a slice from page_desc and page_desc_len
     let page_desc_slice = unsafe { std::slice::from_raw_parts(page_desc, page_desc_len) };
@@ -429,8 +582,13 @@ pub fn show_step(_step_desc: *const u8, _step_desc_len: usize) -> u32 {
 pub fn get_device_property(property: u32) -> u32 {
     match property {
         common::ecall_constants::DEVICE_PROPERTY_ID => 0,
-        common::ecall_constants::DEVICE_PROPERTY_SCREEN_SIZE => 0, // we are in a shell
+        common::ecall_constants::DEVICE_PROPERTY_SCREEN_SIZE => {
+            ((NATIVE_SCREEN_WIDTH as u32) << 16) | (NATIVE_SCREEN_HEIGHT as u32)
+        }
         common::ecall_constants::DEVICE_PROPERTY_FEATURES => 0,
+        common::ecall_constants::DEVICE_PROPERTY_PIXEL_FORMAT => {
+            common::ecall_constants::PixelFormat::Gray4 as u32
+        }
         _ => panic!("Unsupported device property: {}", property),
     }
 }
@@ -1496,6 +1654,63 @@ pub fn hash_final(hash_identifier: u32, ctx: *mut u8, digest: *mut u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::ecall_constants::PixelFormat;
+
+    #[test]
+    fn test_display_blit_gray4() {
+        // Keep PPM dumps out of the working tree during tests.
+        unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
+
+        // 2x1 Gray4 image: left pixel = 0xA, right pixel = 0x5 (stride 1 byte).
+        let buf = [0xA5u8];
+        let ret = display_blit(0, 0, 2, 1, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32);
+        assert_eq!(ret, 1);
+
+        let screen = VIRTUAL_SCREEN.lock().unwrap();
+        assert_eq!(screen.pixels[0], 0xA);
+        assert_eq!(screen.pixels[1], 0x5);
+    }
+
+    #[test]
+    fn test_display_blit_mono1() {
+        unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
+
+        // 8x1 Mono1 image, bits MSB-first: 0b1000_0001 -> pixel 0 and 7 set.
+        let buf = [0b1000_0001u8];
+        let ret = display_blit(0, 10, 8, 1, buf.as_ptr(), buf.len(), PixelFormat::Mono1 as u32);
+        assert_eq!(ret, 1);
+
+        let screen = VIRTUAL_SCREEN.lock().unwrap();
+        let row = 10 * screen.width;
+        assert_eq!(screen.pixels[row], 15);
+        assert_eq!(screen.pixels[row + 1], 0);
+        assert_eq!(screen.pixels[row + 7], 15);
+    }
+
+    #[test]
+    fn test_display_blit_rejects_bad_input() {
+        let buf = [0u8; 4];
+        // Wrong buffer length for a 2x1 Gray4 image (expects 1 byte).
+        assert_eq!(
+            display_blit(0, 0, 2, 1, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32),
+            0
+        );
+        // Out-of-bounds rectangle.
+        assert_eq!(
+            display_blit(
+                NATIVE_SCREEN_WIDTH as u32,
+                0,
+                2,
+                1,
+                buf.as_ptr(),
+                1,
+                PixelFormat::Gray4 as u32,
+            ),
+            0
+        );
+        // Unknown pixel format.
+        assert_eq!(display_blit(0, 0, 2, 1, buf.as_ptr(), 1, 99), 0);
+    }
 
     #[test]
     fn test_slip21() {
