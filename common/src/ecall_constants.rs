@@ -7,6 +7,8 @@ pub const ECALL_PRINT: u32 = 5;
 // device handling, events, and UX
 
 pub const ECALL_GET_EVENT: u32 = 10;
+// Low-level graphics: blit a rectangle of pixels from guest memory to the screen.
+pub const ECALL_DISPLAY_BLIT: u32 = 12;
 pub const ECALL_GET_DEVICE_PROPERTY: u32 = 15;
 
 // Constants used for GET_DEVICE_PROPERTY
@@ -17,6 +19,55 @@ pub const DEVICE_PROPERTY_ID: u32 = 0x01;
 pub const DEVICE_PROPERTY_SCREEN_SIZE: u32 = 0x02;
 // bitmask of device features (to be defined)
 pub const DEVICE_PROPERTY_FEATURES: u32 = 0x03;
+// the device's native pixel format (a `PixelFormat` value), used for `display_blit`
+pub const DEVICE_PROPERTY_PIXEL_FORMAT: u32 = 0x04;
+
+/// Pixel format of a buffer passed to the `display_blit` ECALL.
+///
+/// In every format, rows are stored top-to-bottom, each row padded to a whole
+/// number of bytes (see [`PixelFormat::stride`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub enum PixelFormat {
+    /// 1 bit per pixel. 0 = background, 1 = foreground. Each row is MSB-first
+    /// (the leftmost pixel is the most significant bit of the first byte) and
+    /// padded to a byte boundary: `stride = (w + 7) / 8`.
+    Mono1 = 0,
+    /// 4 bits per pixel grayscale, 0 = black .. 15 = white. Two pixels per byte,
+    /// the high nibble being the left pixel; rows are padded to a byte boundary:
+    /// `stride = (w + 1) / 2`.
+    Gray4 = 1,
+}
+
+impl PixelFormat {
+    /// Reconstructs a `PixelFormat` from its `u32` ECALL encoding.
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(PixelFormat::Mono1),
+            1 => Some(PixelFormat::Gray4),
+            _ => None,
+        }
+    }
+
+    /// Number of bits used to encode a single pixel.
+    pub const fn bits_per_pixel(self) -> usize {
+        match self {
+            PixelFormat::Mono1 => 1,
+            PixelFormat::Gray4 => 4,
+        }
+    }
+
+    /// Number of bytes used to encode a single row of `width` pixels, padded to a
+    /// whole number of bytes.
+    pub const fn stride(self, width: usize) -> usize {
+        (width * self.bits_per_pixel() + 7) / 8
+    }
+
+    /// Total number of bytes required to encode a `width` × `height` image.
+    pub const fn buffer_len(self, width: usize, height: usize) -> usize {
+        self.stride(width) * height
+    }
+}
 
 // Persistent storage
 pub const ECALL_STORAGE_READ: u32 = 20;
