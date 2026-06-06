@@ -1790,6 +1790,31 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
             )?;
             band_y += bh;
         }
+        // Note: this only updates the framebuffer; the caller must issue a
+        // display_refresh to push the drawn region to the panel.
+        Ok(1)
+    }
+
+    fn handle_display_refresh<E: fmt::Debug>(
+        &mut self,
+        _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        format: u32,
+    ) -> Result<u32, CommEcallError> {
+        let Some(format) = PixelFormat::from_u32(format) else {
+            return Ok(0);
+        };
+        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
+            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
+        {
+            return Ok(0);
+        }
+        if w == 0 || h == 0 {
+            return Ok(1);
+        }
         self.ux_handler.blit_refresh(x, y, w, h, format)?;
         Ok(1)
     }
@@ -1829,6 +1854,7 @@ fn get_ecall_name(ecall_code: u32) -> String {
         ECALL_PRINT => "print".into(),
         ECALL_GET_EVENT => "get_event".into(),
         ECALL_DISPLAY_BLIT => "display_blit".into(),
+        ECALL_DISPLAY_REFRESH => "display_refresh".into(),
         ECALL_SHOW_PAGE => "show_page".into(),
         ECALL_SHOW_STEP => "show_step".into(),
         ECALL_GET_DEVICE_PROPERTY => "get_device_property".into(),
@@ -1921,6 +1947,16 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     GPreg!(A4),
                     reg!(A5) as usize,
                     reg!(A6),
+                )?;
+            }
+            ECALL_DISPLAY_REFRESH => {
+                reg!(A0) = self.handle_display_refresh::<CommEcallError>(
+                    cpu,
+                    reg!(A0),
+                    reg!(A1),
+                    reg!(A2),
+                    reg!(A3),
+                    reg!(A4),
                 )?;
             }
 

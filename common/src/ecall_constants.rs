@@ -9,6 +9,8 @@ pub const ECALL_PRINT: u32 = 5;
 pub const ECALL_GET_EVENT: u32 = 10;
 // Low-level graphics: blit a rectangle of pixels from guest memory to the screen.
 pub const ECALL_DISPLAY_BLIT: u32 = 12;
+// Low-level graphics: push a previously drawn rectangle to the physical panel.
+pub const ECALL_DISPLAY_REFRESH: u32 = 13;
 pub const ECALL_GET_DEVICE_PROPERTY: u32 = 15;
 
 // Constants used for GET_DEVICE_PROPERTY

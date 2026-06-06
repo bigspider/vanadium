@@ -399,7 +399,23 @@ pub fn display_blit(
         }
     }
 
-    // Persist a viewable copy of the screen.
+    // Note: only the virtual framebuffer is updated here. The viewable copy (PPM /
+    // simulator window) is produced by `display_refresh`, mirroring the device,
+    // where drawing is decoupled from pushing the panel.
+    1
+}
+
+pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, format: u32) -> u32 {
+    if common::ecall_constants::PixelFormat::from_u32(format).is_none() {
+        return 0;
+    }
+    let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    if x.saturating_add(w) > screen.width || y.saturating_add(h) > screen.height {
+        return 0;
+    }
+
+    // Persist a viewable copy of the whole screen.
     let path = std::env::var("VAPP_SCREEN_PPM").unwrap_or_else(|_| "vapp_screen.ppm".into());
     let _ = screen.dump_ppm(&path);
 

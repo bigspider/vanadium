@@ -130,7 +130,12 @@ forward_to_ecall! {
     ///   `size_of::<EventData>()` (16) bytes.
     pub unsafe fn get_event(data: *mut EventData) -> u32;
 
-    /// Blits a rectangle of pixels from guest memory to the device screen.
+    /// Draws a rectangle of pixels from guest memory into the screen framebuffer.
+    ///
+    /// This only updates the framebuffer; it does **not** push the pixels to the
+    /// physical panel. Call [`display_refresh`] once after one or more `display_blit`
+    /// calls to make the drawn region visible. Separating draw from refresh lets a
+    /// banded full-screen redraw issue a single (expensive) panel refresh.
     ///
     /// # Parameters
     /// - `x`, `y`: Top-left corner of the destination rectangle, in screen pixels.
@@ -155,6 +160,22 @@ forward_to_ecall! {
         buffer_len: usize,
         format: u32,
     ) -> u32;
+
+    /// Pushes a previously drawn rectangle (see [`display_blit`]) to the physical
+    /// panel.
+    ///
+    /// # Parameters
+    /// - `x`, `y`, `w`, `h`: The rectangle to refresh, in screen pixels.
+    /// - `format`: A [`common::ecall_constants::PixelFormat`] value; selects the
+    ///   panel refresh mode appropriate for the bit depth.
+    ///
+    /// # Returns
+    /// 1 on success, 0 on error.
+    ///
+    /// # Safety
+    /// This call does not dereference any pointer, but is kept `unsafe` for
+    /// consistency with the other graphics ECALLs.
+    pub unsafe fn display_refresh(x: u32, y: u32, w: u32, h: u32, format: u32) -> u32;
 
     /// Reads a 32-byte value from the specified storage slot.
     ///

@@ -23,6 +23,7 @@ delegate_ecall!(print, (buffer: *const u8), (size: usize));
 
 delegate_ecall!(get_event, u32, (data: *mut EventData));
 delegate_ecall!(display_blit, u32, (x: u32), (y: u32), (w: u32), (h: u32), (buffer: *const u8), (buffer_len: usize), (format: u32));
+delegate_ecall!(display_refresh, u32, (x: u32), (y: u32), (w: u32), (h: u32), (format: u32));
 delegate_ecall!(get_device_property, u32, (property: u32));
 
 delegate_ecall!(storage_read, u32, (slot_index: u32), (buffer: *mut u8), (buffer_size: usize));
