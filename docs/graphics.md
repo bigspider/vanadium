@@ -230,13 +230,17 @@ graphics, `display_blit` updates an in-memory virtual framebuffer and:
 
 ## Open questions / risks
 
-- **Speed.** A full-screen redraw is slow on the large screens: the framebuffer
-  (~144 KB packed on Flex) lives in guest memory and is paged back from the host to
-  be blitted, and the VM's data page cache is far smaller than the frame, so it
-  thrashes. It works but takes seconds. This is the main thing to improve next.
-  Levers: dirty-rectangle `flush_area` instead of full redraws; a smaller/region
-  canvas; a larger data page cache; or pushing pixels to the device with less
-  copying. Worth measuring with [`bench/`](../bench).
+- **Speed.** A full-screen *`Canvas` + `flush()`* is slow on large screens: the
+  framebuffer (~144 KB packed on Flex) lives in guest memory paged to the host 256
+  bytes at a time, and the VM's data page cache (~12 pages) is far smaller than the
+  frame, so it thrashes (~1000+ host round-trips). The fix, now implemented, is
+  `render_banded` (`app-sdk/src/ux/canvas.rs`): it renders the scene band by band
+  into one small, cache-resident buffer, so the framebuffer never round-trips to the
+  host, and pairs with the draw/refresh split (one panel refresh per frame). The
+  demo `draw` uses it; it runs with the default 64 KiB heap and is markedly faster
+  on Speculos and hardware. Remaining levers for incremental updates: dirty-rectangle
+  `flush_area` (avoid full redraws), and a larger data page cache. Worth measuring
+  with [`bench/`](../bench).
 - **NBGL low-level API**: `nbgl_frontDrawImage` / `nbgl_frontRefreshArea` are BOLOS
   syscalls whose C stubs link into `ledger_secure_sdk_sys` but are not exposed by
   its generated bindings, so the VM declares them itself via `extern "C"`. Verified
