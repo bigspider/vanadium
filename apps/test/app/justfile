@@ -1,8 +1,3 @@
-# A larger heap than the 64 KiB default, so the `draw` command can allocate a
-# full-screen Canvas framebuffer on the large screens (a packed Gray4 Flex screen
-# is ~144 KiB). Harmless on the Nano models, where guest memory is paged.
-export VAPP_HEAP_SIZE := "262144"
-
 run:
   cargo run
 
