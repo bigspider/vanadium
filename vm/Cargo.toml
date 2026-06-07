@@ -66,3 +66,12 @@ icon = "icons/vanadium_32x32_bw.png"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("stax", "flex", "apex_p", "nanos", "nanox", "nanosplus"))'] }
 
 [workspace]
+
+# Local patch of the Ledger SDK (vanadium branch, commit e9f6e7f) to expose touch
+# coordinates: DecodedEventType::Touch carries { x, y, state } parsed from the seph
+# finger packet (upstream only feeds them to NBGL and drops them). The clone lives
+# beside this repo; revert this section once the change lands on the `vanadium` branch.
+[patch."https://github.com/LedgerHQ/ledger-device-rust-sdk.git"]
+ledger_device_sdk = { path = "../../ledger-device-rust-sdk-vanadium/ledger_device_sdk" }
+ledger_secure_sdk_sys = { path = "../../ledger-device-rust-sdk-vanadium/ledger_secure_sdk_sys" }
+include_gif = { path = "../../ledger-device-rust-sdk-vanadium/include_gif" }

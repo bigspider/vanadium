@@ -21,6 +21,10 @@ pub enum Action {
 pub enum EventCode {
     Ticker = 0,
     Action = 1,
+    /// A touch-screen contact (only on devices with a touch screen).
+    Touch = 2,
+    /// A hardware button press/release (only on the two-button Nano devices).
+    Button = 3,
     Unknown = 0xFFFFFFFF,
 }
 
@@ -29,6 +33,8 @@ impl From<u32> for EventCode {
         match value {
             0 => EventCode::Ticker,
             1 => EventCode::Action,
+            2 => EventCode::Touch,
+            3 => EventCode::Button,
             _ => EventCode::Unknown,
         }
     }
@@ -39,6 +45,8 @@ impl From<u32> for EventCode {
 pub union EventData {
     pub ticker: TickerEvent,
     pub action: Action,
+    pub touch: TouchEvent,
+    pub button: ButtonEvent,
     // Reserve space for future expansions. Each event's raw data is exactly 16 bytes.
     // For events that do not define the meaning of the raw data, the value of those bytes is undefined
     // and could change in future versions.
@@ -55,10 +63,60 @@ impl Default for EventData {
 #[derive(Debug, Copy, Clone)]
 pub struct TickerEvent {}
 
+/// Whether a [`TouchEvent`] reports the finger touching down or lifting off.
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TouchState {
+    /// The finger was lifted off the screen.
+    Released = 0,
+    /// The finger is touching the screen.
+    Pressed = 1,
+}
+
+/// A touch-screen contact: its pixel position and whether it is a press or a release.
+/// On a release, `x`/`y` carry the last touched position.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct TouchEvent {
+    pub x: u16,
+    pub y: u16,
+    pub state: TouchState,
+    // Explicit trailing byte so the struct has no implicit padding: when this variant is
+    // written into the 16-byte `EventData` union, every byte is initialized (see the
+    // transmute-to-bytes in the VM's get_event handler). Always 0.
+    _padding: u8,
+}
+
+impl TouchEvent {
+    pub const fn new(x: u16, y: u16, state: TouchState) -> Self {
+        Self {
+            x,
+            y,
+            state,
+            _padding: 0,
+        }
+    }
+}
+
+/// A hardware button event on the two-button Nano devices. The buttons are reported as
+/// left, right, or both, distinguishing presses from releases.
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ButtonEvent {
+    LeftPress = 0,
+    RightPress = 1,
+    BothPress = 2,
+    LeftRelease = 3,
+    RightRelease = 4,
+    BothRelease = 5,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Event {
     Ticker,
     Action(Action),
+    Touch(TouchEvent),
+    Button(ButtonEvent),
     Unknown([u8; 16]),
 }
 

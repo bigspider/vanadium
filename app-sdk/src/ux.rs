@@ -17,8 +17,8 @@ use alloc::vec::Vec;
 
 use common::ecall_constants::DEVICE_PROPERTY_ID;
 pub use common::ux::{
-    Action, Deserializable, Event, EventCode, EventData, Icon, NavInfo, NavigationInfo, Page,
-    PageContent, PageContentInfo, TagValue,
+    Action, ButtonEvent, Deserializable, Event, EventCode, EventData, Icon, NavInfo,
+    NavigationInfo, Page, PageContent, PageContentInfo, TagValue, TouchEvent, TouchState,
 };
 
 use crate::ux_generated;
@@ -151,6 +151,14 @@ pub async fn get_event() -> Event {
             EventCode::Action => {
                 let action = unsafe { event_data.action };
                 return Event::Action(action);
+            }
+            EventCode::Touch => {
+                let touch = unsafe { event_data.touch };
+                return Event::Touch(touch);
+            }
+            EventCode::Button => {
+                let button = unsafe { event_data.button };
+                return Event::Button(button);
             }
             EventCode::Unknown => {
                 let data = unsafe { event_data.raw };

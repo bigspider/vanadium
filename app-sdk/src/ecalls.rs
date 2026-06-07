@@ -222,6 +222,32 @@ forward_to_ecall! {
         color_font: u32,
     ) -> u32;
 
+    /// Returns the rendered width, in screen pixels, of a UTF-8 string in an OS font,
+    /// so a UI can lay out text without rasterizing it in the guest.
+    ///
+    /// # Parameters
+    /// - `font`: A [`common::ecall_constants::Font`] value.
+    /// - `text`: Pointer to the UTF-8 string bytes.
+    /// - `text_len`: Length of `text` in bytes.
+    ///
+    /// # Returns
+    /// The text width in pixels (0 on error or for empty text).
+    ///
+    /// # Safety
+    /// - `text` must be a valid pointer to at least `text_len` bytes of readable memory.
+    pub unsafe fn display_text_width(font: u32, text: *const u8, text_len: usize) -> u32;
+
+    /// Returns the vertical metrics of an OS font, packed as `(height << 16) | line_height`
+    /// (both in pixels), for laying out text rows.
+    ///
+    /// # Parameters
+    /// - `font`: A [`common::ecall_constants::Font`] value.
+    ///
+    /// # Safety
+    /// This call does not dereference any pointer, but is kept `unsafe` for consistency
+    /// with the other graphics ECALLs.
+    pub unsafe fn display_font_metrics(font: u32) -> u32;
+
     /// Reads a 32-byte value from the specified storage slot.
     ///
     /// # Parameters

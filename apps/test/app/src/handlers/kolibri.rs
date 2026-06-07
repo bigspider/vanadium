@@ -1,9 +1,6 @@
 //! Experimental example GUI built with the `kolibri-embedded-gui` immediate-mode
-//! library, rendered through Vanadium's accelerated [`AcceleratedDrawTarget`].
-//!
-//! This is **render-only**: it lays out a static screen of widgets and refreshes once.
-//! kolibri is interactive by nature, but driving it needs raw touch coordinates, which
-//! the VM does not deliver yet (only semantic `Action`s) — so there is no input loop here.
+//! library, rendered through Vanadium's accelerated [`AcceleratedDrawTarget`] and driven
+//! by real input events.
 //!
 //! kolibri draws (by default, with no framebuffer) directly onto its `DrawTarget`, so
 //! [`AcceleratedDrawTarget`] intercepts the solid fills (`clear_background`, button/slider
@@ -12,11 +9,27 @@
 //! framebuffer entirely. (Text is still rasterized pixel-by-pixel by `embedded-graphics`
 //! in the guest, so this is much faster than a full `Canvas` blit but not as fast as the
 //! native-font `Screen` path.)
+//!
+//! ## Input
+//!
+//! The UI is immediate-mode: each frame we set the current [`Interaction`], rebuild the
+//! widgets, and redraw. Events come from [`sdk::ux::get_event`]:
+//!
+//! - **Touch devices** (Stax/Flex/Apex, and the native target via synthetic input): a
+//!   finger press/move/lift maps to kolibri's `Click`/`Drag`/`Release(Point)`, so the
+//!   `-`/`+` buttons, checkbox and slider all react directly.
+//! - **Nano** (two buttons, no pointer): kolibri has no focus model, so we map the buttons
+//!   to the demo state directly — left decrements the counter, right increments it, both
+//!   quit.
+//!
+//! The loop ends when the "Done" button is clicked (touch), both buttons are pressed
+//! (Nano), or a `Quit` action arrives (e.g. EOF on the native synthetic-input stream). On
+//! the native target it also auto-exits after a short idle so non-interactive runs return.
 
-use alloc::{vec, vec::Vec};
+use alloc::{format, vec, vec::Vec};
 
 use embedded_graphics::{
-    geometry::Size,
+    geometry::{Point, Size},
     mono_font::iso_8859_10::{FONT_10X20, FONT_9X15},
     pixelcolor::Gray4,
 };
@@ -26,10 +39,16 @@ use kolibri_embedded_gui::{
     label::Label,
     slider::Slider,
     style::{Spacing, Style},
-    ui::Ui,
+    ui::{Interaction, Ui},
 };
+use sdk::executor::block_on;
 use sdk::ux::canvas::device_screen_size;
 use sdk::ux::screen_target::AcceleratedDrawTarget;
+use sdk::ux::{Action, ButtonEvent, Event, TouchEvent, TouchState};
+
+/// On the native target, exit the event loop after this many consecutive idle tickers, so
+/// a non-interactive run (no `VAPP_NATIVE_INPUT`) renders the frame(s) and returns.
+const NATIVE_IDLE_TICKERS: u32 = 5;
 
 /// A light grayscale (`Gray4`) theme for kolibri, suited to the e-ink screens (white
 /// background, black text/borders, light-gray items). kolibri ships only `Rgb565`
@@ -59,45 +78,145 @@ fn gray4_style() -> Style<Gray4> {
     }
 }
 
-/// Renders a static kolibri GUI and blits it to the screen.
+/// Widget-bound state that input events mutate.
+struct DemoState {
+    counter: i32,
+    checked: bool,
+    level: i16,
+    done: bool,
+}
+
+/// Builds and draws one frame of the UI, applying `interaction` and mutating `state`
+/// according to which widgets were touched. The `AcceleratedDrawTarget` is not refreshed
+/// here; the caller pushes the frame to the panel once.
+fn render_frame(
+    target: &mut AcceleratedDrawTarget,
+    width: u32,
+    state: &mut DemoState,
+    interaction: Interaction,
+) {
+    let counter_text = format!("counter: {}", state.counter);
+
+    let mut ui = Ui::new_fullscreen(target, gray4_style());
+    ui.interact(interaction);
+    ui.clear_background().ok();
+
+    ui.add(Label::new("Vanadium + Kolibri").with_font(FONT_10X20));
+    ui.add(Label::new("immediate-mode GUI"));
+
+    // A horizontal row: a counter flanked by buttons.
+    if ui.add_horizontal(Button::new("-")).clicked() {
+        state.counter -= 1;
+    }
+    ui.add_horizontal(Label::new(&counter_text));
+    if ui.add_horizontal(Button::new("+")).clicked() {
+        state.counter += 1;
+    }
+
+    // Checkbox and slider mutate `state.checked` / `state.level` internally on interaction.
+    ui.add(Checkbox::new(&mut state.checked));
+    ui.add(
+        Slider::new(&mut state.level, 0i16..=100)
+            .label("level")
+            .width(width.saturating_sub(40)),
+    );
+
+    if ui.add(Button::new("Done")).clicked() {
+        state.done = true;
+    }
+}
+
+/// Maps a touch event to a kolibri [`Interaction`]. The seph stream reports a press (and
+/// each subsequent move) as `Pressed`, and the lift as `Released`; `dragging` tracks
+/// whether we are between a press and its release so moves become `Drag` rather than a new
+/// `Click`.
+fn map_touch(te: TouchEvent, dragging: &mut bool) -> Interaction {
+    let p = Point::new(te.x as i32, te.y as i32);
+    match te.state {
+        TouchState::Pressed => {
+            if *dragging {
+                Interaction::Drag(p)
+            } else {
+                *dragging = true;
+                Interaction::Click(p)
+            }
+        }
+        TouchState::Released => {
+            *dragging = false;
+            Interaction::Release(p)
+        }
+    }
+}
+
+/// Renders an interactive kolibri GUI and runs its event loop until the user finishes.
 ///
 /// Returns `width(u16 BE) || height(u16 BE) || ok(u8)` (same shape as the `draw` demo).
 pub fn handle_kolibri(_data: &[u8]) -> Vec<u8> {
     let (w, h) = device_screen_size();
+    let width = w as u32;
 
-    // Accelerated draw target: solid fills go to native display_fill_rect, the rest to
-    // small dirty-rectangle blits — no full-screen guest framebuffer.
-    let mut target = AcceleratedDrawTarget::new();
+    // Touch devices (and the native target) deliver Touch events and use the page UX model;
+    // the two-button Nano devices deliver Button events instead.
+    let touch_input = sdk::ux::has_page_api();
+    let is_native = cfg!(feature = "target_native");
 
-    // Widget-bound state. With no input wired, these just show an initial position.
-    let mut checked = true;
-    let mut level: i16 = 42;
+    block_on(async move {
+        // Accelerated draw target: solid fills go to native display_fill_rect, the rest to
+        // small dirty-rectangle blits — no full-screen guest framebuffer.
+        let mut target = AcceleratedDrawTarget::new();
+        let mut state = DemoState {
+            counter: 0,
+            checked: true,
+            level: 42,
+            done: false,
+        };
+        let mut dragging = false;
 
-    {
-        let mut ui = Ui::new_fullscreen(&mut target, gray4_style());
-        ui.clear_background().ok();
+        // Initial frame.
+        render_frame(&mut target, width, &mut state, Interaction::None);
+        target.refresh();
 
-        ui.add(Label::new("Vanadium + Kolibri").with_font(FONT_10X20));
-        ui.add(Label::new("immediate-mode GUI (render-only)"));
+        let mut idle_tickers = 0u32;
+        loop {
+            match sdk::ux::get_event().await {
+                Event::Touch(te) if touch_input => {
+                    idle_tickers = 0;
+                    let interaction = map_touch(te, &mut dragging);
+                    render_frame(&mut target, width, &mut state, interaction);
+                    target.refresh();
+                }
+                Event::Button(btn) if !touch_input => {
+                    idle_tickers = 0;
+                    match btn {
+                        ButtonEvent::LeftPress => state.counter -= 1,
+                        ButtonEvent::RightPress => state.counter += 1,
+                        ButtonEvent::BothPress => state.done = true,
+                        _ => {}
+                    }
+                    render_frame(&mut target, width, &mut state, Interaction::None);
+                    target.refresh();
+                }
+                Event::Action(Action::Quit) => break,
+                Event::Ticker => {
+                    if is_native {
+                        idle_tickers += 1;
+                        if idle_tickers >= NATIVE_IDLE_TICKERS {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
 
-        // A horizontal row: a counter flanked by buttons (not interactive yet).
-        ui.add_horizontal(Button::new("-"));
-        ui.add_horizontal(Label::new("counter: 0"));
-        ui.add_horizontal(Button::new("+"));
-
-        ui.add(Checkbox::new(&mut checked));
-        ui.add(
-            Slider::new(&mut level, 0i16..=100)
-                .label("level")
-                .width((w as u32).saturating_sub(40)),
-        );
-    }
-
-    let ok = target.refresh();
+            if state.done {
+                break;
+            }
+        }
+    });
 
     let mut resp = vec![];
     resp.extend_from_slice(&(w as u16).to_be_bytes());
     resp.extend_from_slice(&(h as u16).to_be_bytes());
-    resp.push(ok as u8);
+    resp.push(1u8);
     resp
 }

@@ -25,6 +25,7 @@ pub mod hash;
 pub mod rand;
 pub mod slip21;
 pub mod storage;
+pub mod ui;
 pub mod ux;
 
 pub use app::{App, AppBuilder, IsReady, TaskHandle};

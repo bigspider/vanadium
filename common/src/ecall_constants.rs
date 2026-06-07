@@ -22,6 +22,11 @@ pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 16;
 // which is neither a BOLOS syscall nor compiled into the VM, so they are not yet
 // available. Only syscall-backed primitives (`nbgl_frontDrawRect`, `nbgl_drawText`)
 // are exposed for now.
+// Text measurement with an OS font, so a UI can lay out text without rasterizing it in
+// the guest. `text_width` returns the rendered width in pixels of a UTF-8 string;
+// `font_metrics` returns packed `(height << 16) | line_height` for a `Font`.
+pub const ECALL_DISPLAY_TEXT_WIDTH: u32 = 20;
+pub const ECALL_DISPLAY_FONT_METRICS: u32 = 21;
 
 // Constants used for GET_DEVICE_PROPERTY
 

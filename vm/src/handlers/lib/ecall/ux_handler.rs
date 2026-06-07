@@ -93,10 +93,49 @@ pub fn get_last_event() -> Option<(common::ux::EventCode, common::ux::EventData)
     }
 }
 
+/// Builds a [`Touch`](common::ux::EventCode::Touch) event from a decoded seph finger
+/// packet and stores it for delivery to the guest's `get_event`.
+#[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
+pub fn store_touch_event(x: u16, y: u16, state: u8) {
+    use common::ux::{EventCode, EventData, TouchEvent, TouchState};
+    // seph finger state: 0x01 (SEPROXYHAL_TAG_FINGER_EVENT_TOUCH) = pressed; 0x02 = released.
+    let state = if state == 1 {
+        TouchState::Pressed
+    } else {
+        TouchState::Released
+    };
+    let mut event_data = EventData::default();
+    event_data.touch = TouchEvent::new(x, y, state);
+    store_new_event(EventCode::Touch, event_data);
+}
+
+/// Builds a [`Button`](common::ux::EventCode::Button) event from a decoded button event
+/// and stores it for delivery to the guest's `get_event`.
+#[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
+pub fn store_button_event(btn: ledger_device_sdk::buttons::ButtonEvent) {
+    use common::ux::{ButtonEvent as CButton, EventCode, EventData};
+    use ledger_device_sdk::buttons::ButtonEvent;
+    let mapped = match btn {
+        ButtonEvent::LeftButtonPress => CButton::LeftPress,
+        ButtonEvent::RightButtonPress => CButton::RightPress,
+        ButtonEvent::BothButtonsPress => CButton::BothPress,
+        ButtonEvent::LeftButtonRelease => CButton::LeftRelease,
+        ButtonEvent::RightButtonRelease => CButton::RightRelease,
+        ButtonEvent::BothButtonsRelease => CButton::BothRelease,
+    };
+    let mut event_data = EventData::default();
+    event_data.button = mapped;
+    store_new_event(EventCode::Button, event_data);
+}
+
 fn store_new_event(event_code: common::ux::EventCode, event_data: common::ux::EventData) {
     init_last_event();
-    // We store the new event if there was no stored event, or there is just a ticker
-    // Otherwise we drop the new event
+    // We store the new event if there is no buffered event or only a ticker. Additionally,
+    // we coalesce consecutive touch events: a newer touch overwrites a still-unconsumed one
+    // so the latest finger state — in particular a release ending a drag — is never dropped
+    // behind a stale press while the guest is busy (e.g. mid-redraw). Without this, a lost
+    // release leaves a custom GUI thinking the finger is still down. Other event kinds
+    // (notably NBGL `Action`s) are still preserved, so page UX is unaffected.
     #[allow(static_mut_refs)]
     unsafe {
         if !LAST_EVENT_INITIALIZED {
@@ -104,7 +143,15 @@ fn store_new_event(event_code: common::ux::EventCode, event_data: common::ux::Ev
             LAST_EVENT_INITIALIZED = true;
         }
         let last_event = LAST_EVENT.assume_init_mut();
-        if last_event.is_none() || last_event.as_ref().unwrap().0 == common::ux::EventCode::Ticker {
+        let replace = match last_event.as_ref() {
+            None => true,
+            Some((code, _)) => {
+                *code == common::ux::EventCode::Ticker
+                    || (*code == common::ux::EventCode::Touch
+                        && event_code == common::ux::EventCode::Touch)
+            }
+        };
+        if replace {
             *last_event = Some((event_code, event_data));
         }
     }
@@ -514,6 +561,39 @@ impl UxHandler {
         }
 
         Ok(())
+    }
+
+    /// Returns the rendered width in pixels of a UTF-8 string in an OS font, without
+    /// drawing it — so a guest UI can lay out text without rasterizing it. Backed by the
+    /// `nbgl_getTextWidth` syscall, which expects a NUL-terminated string.
+    pub fn text_width(
+        &mut self,
+        text: &[u8],
+        font: common::ecall_constants::Font,
+    ) -> Result<u16, CommEcallError> {
+        extern "C" {
+            fn nbgl_getTextWidth(
+                font_id: sys::nbgl_font_id_e,
+                text: *const core::ffi::c_char,
+            ) -> u16;
+        }
+        // nbgl_getTextWidth needs a C string; reject interior NULs (width 0).
+        let Ok(cstr) = CString::new(text) else {
+            return Ok(0);
+        };
+        let w = unsafe { nbgl_getTextWidth(font_id(font), cstr.as_ptr()) };
+        Ok(w)
+    }
+
+    /// Returns `(height, line_height)` in pixels for an OS font, for row layout. Backed by
+    /// the `nbgl_getFontHeight` / `nbgl_getFontLineHeight` syscalls.
+    pub fn font_metrics(&self, font: common::ecall_constants::Font) -> (u8, u8) {
+        extern "C" {
+            fn nbgl_getFontHeight(font_id: sys::nbgl_font_id_e) -> u8;
+            fn nbgl_getFontLineHeight(font_id: sys::nbgl_font_id_e) -> u8;
+        }
+        let id = font_id(font);
+        unsafe { (nbgl_getFontHeight(id), nbgl_getFontLineHeight(id)) }
     }
 
     #[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]

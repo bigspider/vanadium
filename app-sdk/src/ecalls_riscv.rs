@@ -26,6 +26,8 @@ delegate_ecall!(display_blit, u32, (x: u32), (y: u32), (w: u32), (h: u32), (buff
 delegate_ecall!(display_refresh, u32, (x: u32), (y: u32), (w: u32), (h: u32), (mode: u32));
 delegate_ecall!(display_fill_rect, u32, (x: u32), (y: u32), (w: u32), (h: u32), (color: u32));
 delegate_ecall!(display_draw_text, u32, (x: u32), (y: u32), (w: u32), (h: u32), (text: *const u8), (text_len: usize), (color_font: u32));
+delegate_ecall!(display_text_width, u32, (font: u32), (text: *const u8), (text_len: usize));
+delegate_ecall!(display_font_metrics, u32, (font: u32));
 delegate_ecall!(get_device_property, u32, (property: u32));
 
 delegate_ecall!(storage_read, u32, (slot_index: u32), (buffer: *mut u8), (buffer_size: usize));

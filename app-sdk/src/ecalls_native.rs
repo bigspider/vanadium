@@ -267,6 +267,66 @@ pub fn print(buffer: *const u8, size: usize) {
     println!("{}", String::from_utf8_lossy(data));
 }
 
+// Parses one line of synthetic input (see `read_synthetic_event`) into an event.
+// Returns `None` for an empty/unrecognized line (the caller then yields a Ticker).
+fn parse_synthetic_event(line: &str) -> Option<(EventCode, EventData)> {
+    use common::ux::{Action, ButtonEvent, TouchEvent, TouchState};
+    let mut it = line.split_whitespace();
+    let coords = |it: &mut std::str::SplitWhitespace| -> Option<(u16, u16)> {
+        let x = it.next()?.parse().ok()?;
+        let y = it.next()?.parse().ok()?;
+        Some((x, y))
+    };
+    let (code, data) = match it.next()? {
+        // Touch screen: "t x y" press, "u x y" release (last touched point).
+        "t" | "touch" => {
+            let (x, y) = coords(&mut it)?;
+            let mut ed = EventData::default();
+            ed.touch = TouchEvent::new(x, y, TouchState::Pressed);
+            (EventCode::Touch, ed)
+        }
+        "u" | "up" | "release" => {
+            let (x, y) = coords(&mut it)?;
+            let mut ed = EventData::default();
+            ed.touch = TouchEvent::new(x, y, TouchState::Released);
+            (EventCode::Touch, ed)
+        }
+        // Nano buttons.
+        "left" | "l" => button(ButtonEvent::LeftPress),
+        "right" | "r" => button(ButtonEvent::RightPress),
+        "both" | "b" => button(ButtonEvent::BothPress),
+        // Quit the current custom-GUI loop.
+        "q" | "quit" => {
+            let mut ed = EventData::default();
+            ed.action = Action::Quit;
+            (EventCode::Action, ed)
+        }
+        _ => return None,
+    };
+    return Some((code, data));
+
+    fn button(b: common::ux::ButtonEvent) -> (EventCode, EventData) {
+        let mut ed = EventData::default();
+        ed.button = b;
+        (EventCode::Button, ed)
+    }
+}
+
+// Reads one synthetic event from stdin, for interactively driving custom GUIs (e.g. the
+// kolibri demo) on the native target. EOF is reported as a Quit action so a loop can end.
+fn read_synthetic_event() -> Option<(EventCode, EventData)> {
+    use std::io::BufRead;
+    let mut line = String::new();
+    let n = std::io::stdin().lock().read_line(&mut line).unwrap_or(0);
+    if n == 0 {
+        // EOF: synthesize a Quit so the caller's event loop can terminate.
+        let mut ed = EventData::default();
+        ed.action = common::ux::Action::Quit;
+        return Some((EventCode::Action, ed));
+    }
+    parse_synthetic_event(line.trim())
+}
+
 pub fn get_event(data: *mut EventData) -> u32 {
     if data.is_null() {
         panic!("The EventData pointer must not be null");
@@ -279,7 +339,18 @@ pub fn get_event(data: *mut EventData) -> u32 {
         }
     }
 
-    // for now there is no other type of event than the ticker.
+    // Optional synthetic input for interactively testing custom GUIs on native. Enabled by
+    // setting VAPP_NATIVE_INPUT; otherwise the only event is the periodic ticker. Page-based
+    // UX stores its action before calling get_event, so this branch never steals their input.
+    if std::env::var_os("VAPP_NATIVE_INPUT").is_some() {
+        if let Some((event_code, event_data)) = read_synthetic_event() {
+            unsafe {
+                std::ptr::write(data, event_data);
+            }
+            return event_code as u32;
+        }
+    }
+
     // We wait for TICKER_MS milliseconds and return a Ticker event.
     std::thread::sleep(std::time::Duration::from_millis(TICKER_MS));
     return EventCode::Ticker as u32;
@@ -463,25 +534,129 @@ pub fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> u32 {
     1
 }
 
+// Maps a device [`Font`](common::ecall_constants::Font) id to an embedded-graphics
+// monospace font of comparable size, for the native backend's best-effort text rendering
+// and measurement. The device uses real OS fonts; this only needs to look representative.
+#[cfg(feature = "embedded-graphics")]
+fn native_mono_font(font: u32) -> &'static embedded_graphics::mono_font::MonoFont<'static> {
+    use common::ecall_constants::Font;
+    use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_9X15, FONT_9X15_BOLD};
+    match Font::from_u32(font) {
+        Some(Font::Bold) => &FONT_9X15_BOLD,
+        Some(Font::Large) => &FONT_10X20,
+        _ => &FONT_9X15, // Regular / unknown
+    }
+}
+
+// (per-character advance width, glyph height, line height) in pixels for a device font.
+// Used so the native backend's `display_text_width` / `display_font_metrics` stay
+// consistent with what `display_draw_text` renders.
+fn native_font_dims(font: u32) -> (u32, u32, u32) {
+    #[cfg(feature = "embedded-graphics")]
+    {
+        let f = native_mono_font(font);
+        let cw = f.character_size.width + f.character_spacing;
+        let h = f.character_size.height;
+        (cw, h, h + 2)
+    }
+    #[cfg(not(feature = "embedded-graphics"))]
+    {
+        let _ = font;
+        (9, 15, 17)
+    }
+}
+
+// A `DrawTarget` over the native virtual screen, so embedded-graphics can rasterize text
+// into it (the device rasterizes natively via NBGL; here we approximate for the PPM).
+#[cfg(feature = "embedded-graphics")]
+struct VsTarget<'a> {
+    screen: &'a mut VirtualScreen,
+}
+
+#[cfg(feature = "embedded-graphics")]
+impl embedded_graphics::draw_target::DrawTarget for VsTarget<'_> {
+    type Color = embedded_graphics::pixelcolor::Gray4;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        use embedded_graphics::prelude::*;
+        let (w, h) = (self.screen.width as i32, self.screen.height as i32);
+        for embedded_graphics::Pixel(p, c) in pixels {
+            if p.x >= 0 && p.y >= 0 && p.x < w && p.y < h {
+                let idx = p.y as usize * self.screen.width + p.x as usize;
+                self.screen.pixels[idx] = c.luma();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "embedded-graphics")]
+impl embedded_graphics::geometry::OriginDimensions for VsTarget<'_> {
+    fn size(&self) -> embedded_graphics::geometry::Size {
+        embedded_graphics::geometry::Size::new(self.screen.width as u32, self.screen.height as u32)
+    }
+}
+
 pub fn display_draw_text(
-    _x: u32,
-    _y: u32,
-    _w: u32,
-    _h: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
     text: *const u8,
     text_len: usize,
     color_font: u32,
 ) -> u32 {
-    if common::ecall_constants::Color::from_u32(color_font >> 16).is_none() {
+    let Some(_color) = common::ecall_constants::Color::from_u32(color_font >> 16) else {
         return 0;
-    }
+    };
     // SAFETY: caller guarantees [text, text+text_len) is valid UTF-8 readable memory.
     let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
-    if core::str::from_utf8(bytes).is_err() {
+    let Ok(_s) = core::str::from_utf8(bytes) else {
         return 0;
+    };
+    #[cfg(feature = "embedded-graphics")]
+    {
+        use embedded_graphics::{
+            mono_font::MonoTextStyle,
+            pixelcolor::Gray4,
+            prelude::*,
+            text::{Baseline, Text},
+        };
+        let style = MonoTextStyle::new(native_mono_font(color_font & 0xffff), Gray4::new(_color.intensity()));
+        let mut screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
+        let mut target = VsTarget {
+            screen: &mut screen,
+        };
+        // The device positions text within the (x, y, w, h) box from the top-left; mirror
+        // that with a Top baseline at (x, y).
+        let _ = Text::with_baseline(_s, Point::new(x as i32, y as i32), style, Baseline::Top)
+            .draw(&mut target);
+        let _ = (w, h);
     }
-    // No font rasterization on the native backend; the draw succeeds but renders nothing.
+    #[cfg(not(feature = "embedded-graphics"))]
+    {
+        let _ = (x, y, w, h);
+    }
     1
+}
+
+pub fn display_text_width(font: u32, text: *const u8, text_len: usize) -> u32 {
+    // SAFETY: caller guarantees [text, text+text_len) is valid UTF-8 readable memory.
+    let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
+    let Ok(s) = core::str::from_utf8(bytes) else {
+        return 0;
+    };
+    let (cw, _, _) = native_font_dims(font);
+    s.chars().count() as u32 * cw
+}
+
+pub fn display_font_metrics(font: u32) -> u32 {
+    let (_, height, line_height) = native_font_dims(font);
+    (height << 16) | line_height
 }
 
 #[cfg(feature = "gui")]

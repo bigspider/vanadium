@@ -1880,6 +1880,40 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         Ok(1)
     }
 
+    fn handle_display_text_width<E: fmt::Debug>(
+        &mut self,
+        cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
+        font: u32,
+        text_ptr: GuestPointer,
+        text_len: usize,
+    ) -> Result<u32, CommEcallError> {
+        let Some(font) = Font::from_u32(font) else {
+            return Ok(0);
+        };
+        if text_len > MAX_DISPLAY_TEXT_LEN {
+            return Err(CommEcallError::InvalidParameters("display text is too long"));
+        }
+        let mut buf = vec![0u8; text_len];
+        cpu.get_segment::<E>(text_ptr.0)?
+            .read_buffer(text_ptr.0, &mut buf)?;
+        if core::str::from_utf8(&buf).is_err() {
+            return Ok(0);
+        }
+        Ok(self.ux_handler.text_width(&buf, font)? as u32)
+    }
+
+    fn handle_display_font_metrics<E: fmt::Debug>(
+        &mut self,
+        _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
+        font: u32,
+    ) -> Result<u32, CommEcallError> {
+        let Some(font) = Font::from_u32(font) else {
+            return Ok(0);
+        };
+        let (height, line_height) = self.ux_handler.font_metrics(font);
+        Ok(((height as u32) << 16) | line_height as u32)
+    }
+
     fn handle_get_device_property<E: fmt::Debug>(
         &mut self,
         _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
@@ -1895,12 +1929,23 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
     }
 }
 
-// Processes all events until a ticker is received, then returns
+// Processes all events until a ticker is received, then returns.
+//
+// Touch (touch-screen devices) and button (Nano) events seen along the way are stashed
+// via `store_new_event` so the guest's next `get_event` returns them — the same deferred
+// mechanism the NBGL page/step callbacks use for semantic `Action`s. When an NBGL screen
+// is active, its touch callback runs first (during `try_next_event`) and stores an
+// `Action`; `store_new_event` keeps that and drops the raw Touch, so NBGL pages are
+// unaffected. Custom GUIs (no NBGL object) get the raw Touch/Button instead.
 fn wait_for_ticker<const N: usize>(comm: &mut RefMut<'_, &mut ledger_device_sdk::io::Comm<N>>) {
     loop {
-        let ety = comm.try_next_event().into_type();
-        if matches!(ety, DecodedEventType::Ticker) {
-            return;
+        match comm.try_next_event().into_type() {
+            DecodedEventType::Ticker => return,
+            #[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
+            DecodedEventType::Touch { x, y, state } => store_touch_event(x, y, state),
+            #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
+            DecodedEventType::Button(btn) => store_button_event(btn),
+            _ => {}
         }
     }
 }
@@ -1918,6 +1963,8 @@ fn get_ecall_name(ecall_code: u32) -> String {
         ECALL_DISPLAY_REFRESH => "display_refresh".into(),
         ECALL_DISPLAY_FILL_RECT => "display_fill_rect".into(),
         ECALL_DISPLAY_DRAW_TEXT => "display_draw_text".into(),
+        ECALL_DISPLAY_TEXT_WIDTH => "display_text_width".into(),
+        ECALL_DISPLAY_FONT_METRICS => "display_font_metrics".into(),
         ECALL_SHOW_PAGE => "show_page".into(),
         ECALL_SHOW_STEP => "show_step".into(),
         ECALL_GET_DEVICE_PROPERTY => "get_device_property".into(),
@@ -2043,6 +2090,17 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     reg!(A5) as usize,
                     reg!(A6),
                 )?;
+            }
+            ECALL_DISPLAY_TEXT_WIDTH => {
+                reg!(A0) = self.handle_display_text_width::<CommEcallError>(
+                    cpu,
+                    reg!(A0),
+                    GPreg!(A1),
+                    reg!(A2) as usize,
+                )?;
+            }
+            ECALL_DISPLAY_FONT_METRICS => {
+                reg!(A0) = self.handle_display_font_metrics::<CommEcallError>(cpu, reg!(A0))?;
             }
 
             ECALL_STORAGE_READ => {
