@@ -96,6 +96,8 @@ const MAX_BIP32_PATH: usize = 16;
 
 const MAX_UX_STEP_LEN: usize = 512;
 const MAX_UX_PAGE_LEN: usize = 512;
+// Upper bound on the byte length of a string passed to display_draw_text / _qrcode.
+const MAX_DISPLAY_TEXT_LEN: usize = 512;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
@@ -1802,9 +1804,9 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         y: u32,
         w: u32,
         h: u32,
-        format: u32,
+        mode: u32,
     ) -> Result<u32, CommEcallError> {
-        let Some(format) = PixelFormat::from_u32(format) else {
+        let Some(mode) = RefreshMode::from_u32(mode) else {
             return Ok(0);
         };
         if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
@@ -1815,7 +1817,66 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         if w == 0 || h == 0 {
             return Ok(1);
         }
-        self.ux_handler.blit_refresh(x, y, w, h, format)?;
+        self.ux_handler.blit_refresh(x, y, w, h, mode)?;
+        Ok(1)
+    }
+
+    fn handle_display_fill_rect<E: fmt::Debug>(
+        &mut self,
+        _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        color: u32,
+    ) -> Result<u32, CommEcallError> {
+        let Some(color) = Color::from_u32(color) else {
+            return Ok(0);
+        };
+        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
+            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
+        {
+            return Ok(0);
+        }
+        if w == 0 || h == 0 {
+            return Ok(1);
+        }
+        self.ux_handler.fill_rect(x, y, w, h, color)?;
+        Ok(1)
+    }
+
+    fn handle_display_draw_text<E: fmt::Debug>(
+        &mut self,
+        cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        text_ptr: GuestPointer,
+        text_len: usize,
+        color_font: u32,
+    ) -> Result<u32, CommEcallError> {
+        let Some(color) = Color::from_u32(color_font >> 16) else {
+            return Ok(0);
+        };
+        let Some(font) = Font::from_u32(color_font & 0xffff) else {
+            return Ok(0);
+        };
+        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
+            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
+        {
+            return Ok(0);
+        }
+        if text_len > MAX_DISPLAY_TEXT_LEN {
+            return Err(CommEcallError::InvalidParameters("display text is too long"));
+        }
+        let mut buf = vec![0u8; text_len];
+        cpu.get_segment::<E>(text_ptr.0)?
+            .read_buffer(text_ptr.0, &mut buf)?;
+        if core::str::from_utf8(&buf).is_err() {
+            return Ok(0);
+        }
+        self.ux_handler.draw_text(x, y, w, h, &buf, font, color)?;
         Ok(1)
     }
 
@@ -1855,6 +1916,8 @@ fn get_ecall_name(ecall_code: u32) -> String {
         ECALL_GET_EVENT => "get_event".into(),
         ECALL_DISPLAY_BLIT => "display_blit".into(),
         ECALL_DISPLAY_REFRESH => "display_refresh".into(),
+        ECALL_DISPLAY_FILL_RECT => "display_fill_rect".into(),
+        ECALL_DISPLAY_DRAW_TEXT => "display_draw_text".into(),
         ECALL_SHOW_PAGE => "show_page".into(),
         ECALL_SHOW_STEP => "show_step".into(),
         ECALL_GET_DEVICE_PROPERTY => "get_device_property".into(),
@@ -1957,6 +2020,28 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     reg!(A2),
                     reg!(A3),
                     reg!(A4),
+                )?;
+            }
+            ECALL_DISPLAY_FILL_RECT => {
+                reg!(A0) = self.handle_display_fill_rect::<CommEcallError>(
+                    cpu,
+                    reg!(A0),
+                    reg!(A1),
+                    reg!(A2),
+                    reg!(A3),
+                    reg!(A4),
+                )?;
+            }
+            ECALL_DISPLAY_DRAW_TEXT => {
+                reg!(A0) = self.handle_display_draw_text::<CommEcallError>(
+                    cpu,
+                    reg!(A0),
+                    reg!(A1),
+                    reg!(A2),
+                    reg!(A3),
+                    GPreg!(A4),
+                    reg!(A5) as usize,
+                    reg!(A6),
                 )?;
             }
 

@@ -1,7 +1,25 @@
 # Low-level graphics ECALLs
 
-> Status: **experimental / proof-of-concept**. The blit ECALL, its pixel formats,
-> and the SDK `Canvas` abstraction are subject to change.
+> Status: **experimental / proof-of-concept**. The blit ECALL, the accelerated
+> command-stream ops, their pixel formats / colors, and the SDK `Canvas` / `Screen`
+> abstractions are all subject to change.
+
+> **Two drawing models.** There are now two ways to put pixels on the screen, with
+> opposite trade-offs:
+>
+> 1. **Command stream (recommended, fast):** issue a handful of coarse draw ops
+>    (`display_fill_rect`, `display_draw_text`, …) that the VM forwards to the device's
+>    *native* NBGL drawing, operating on the framebuffer the OS already owns. Nothing is
+>    rasterized in the guest and only tiny descriptors cross the ECALL boundary. SDK type:
+>    [`ux::screen::Screen`](../app-sdk/src/ux/screen.rs). This is the path to prefer on
+>    large screens.
+> 2. **Blit (general, slow):** rasterize arbitrary pixels into a guest-RAM framebuffer
+>    with `embedded-graphics` and push them with `display_blit`. SDK type:
+>    [`ux::canvas::Canvas`](../app-sdk/src/ux/canvas.rs). Keep this for content the
+>    command stream can't express (arbitrary computed pixels, full 16-level grayscale).
+>
+> The rest of this document first describes the blit model (the original design), then
+> the command-stream model and why it is dramatically faster on real hardware.
 
 ## Motivation
 
@@ -49,6 +67,19 @@ Contrast with the rejected alternative of exposing per-primitive drawing ECALLs
 
 The blit model keeps the stable surface tiny and lets the SDK abstraction evolve
 (including adding accelerated ops later) without ECALL changes.
+
+> **Update — this principle does not hold on real hardware.** The "draw in the guest"
+> reasoning assumed guest rasterization is free. It is not: the VM is a *software RISC-V
+> interpreter* over paged, encrypted, Merkle-authenticated memory, so every rasterized
+> pixel is interpreted, and a full framebuffer (~144 KB on Flex) thrashes the tiny data
+> page cache. A full-screen blit is consequently very slow on Flex/Stax. `render_banded`
+> (below) hides the paging cost but multiplies the *interpreted rasterization* cost (it
+> re-runs the whole scene once per band). The per-primitive alternative was rejected only
+> because of how chatty an `embedded-graphics` `DrawTarget` would be if it emitted one
+> ECALL per pixel run — but that does **not** apply to *coarse, app-driven* ops called a
+> handful of times per frame, which is exactly NBGL's own model. Those ops are now
+> provided (see [Accelerated command-stream ops](#accelerated-command-stream-ops)) and
+> are the recommended path; the blit stays as the fallback for arbitrary pixels.
 
 ## The blit ECALL
 
@@ -191,6 +222,78 @@ Because apps only see `Canvas`, the underlying ECALL (or the device pixel format
 or even a future switch to accelerated drawing ops) can change without breaking
 app code.
 
+## Accelerated command-stream ops
+
+Instead of rasterizing in the guest and blitting, a V-App can issue **draw commands**
+that the VM forwards to the device's native NBGL drawing, which operates on the
+framebuffer the OS already owns and persists between calls. This removes both costs of
+the blit model at once: there is **no guest framebuffer** to page, and **no per-pixel
+rasterization** in the interpreter. Only a small descriptor (or a short string) crosses
+the ECALL boundary per op.
+
+This is exactly how NBGL itself is fast: its low-level primitives are coarse and
+descriptor-shaped, glyphs/icons are native, and only changed regions are refreshed.
+
+### The ECALLs
+
+```rust
+// common/src/ecall_constants.rs
+pub const ECALL_DISPLAY_FILL_RECT: u32 = 14;  // -> nbgl_frontDrawRect
+pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 16;  // -> nbgl_drawText (OS fonts)
+
+display_fill_rect(x, y, w, h, color) -> u32;
+display_draw_text(x, y, w, h, text, text_len, color_font) -> u32;
+```
+
+- `color` is a [`Color`](../common/src/ecall_constants.rs) — NBGL's **4-color palette**
+  (`Black`, `DarkGray`, `LightGray`, `White`). The vector primitives are 4-color; for
+  full 16-level grayscale use the blit path.
+- `color_font` packs `(color << 16) | font`, where `font` is a semantic
+  [`Font`](../common/src/ecall_constants.rs) (`Regular` / `Bold` / `Large`) that the VM
+  maps to the device's matching `nbgl_font_id_e` (the font sets differ per device).
+- `display_fill_rect` does **not** require 4-row alignment: `nbgl_frontDrawRect` aligns
+  `y0`/`height` itself and preserves the partial rows. (The blit path's column-major /
+  4-row constraints do not apply here.)
+- Like the blit ops, these only touch the framebuffer; call `display_refresh` once after
+  a batch to push the result to the panel.
+
+### Refresh modes
+
+`display_refresh`'s last argument is now a [`RefreshMode`](../common/src/ecall_constants.rs)
+(`FullColor` / `Partial` / `BlackWhite` / `BlackWhiteFast`) rather than a pixel format.
+The panel refresh is the expensive part of an e-ink update, so picking a partial or fast
+B&W mode for small or monochrome updates is a real performance lever. The SDK defaults to
+`FullColor` on grayscale screens and `BlackWhite` on monochrome ones.
+
+### Which NBGL functions are reachable
+
+The VM can only call NBGL functions that are either BOLOS **syscalls** (stubbed in
+`nbgl_stubs.S`) or compiled into the VM. `nbgl_frontDrawRect` (and the rest of the
+`nbgl_front*` family, in `src/syscalls.c`) and `nbgl_drawText` (syscall) qualify.
+`nbgl_drawRoundedRect`, `nbgl_drawQrCode` and `nbgl_drawIcon` live in `nbgl_draw.c`,
+which the VM does **not** compile and which are not syscalls — so rounded rectangles, QR
+codes and icons are **not yet available**. Adding them would require compiling
+`nbgl_draw.c` into the VM (or new syscalls). Compressed-image ops (`nbgl_frontDrawImageRle`
+/ `…File`) are reachable but need build-time asset tooling and are not wired up yet.
+
+### SDK abstraction
+
+V-Apps use [`ux::screen::Screen`](../app-sdk/src/ux/screen.rs):
+
+```rust
+use vanadium_app_sdk::ux::screen::{Screen, Color, Font};
+
+let s = Screen::new();          // queries device geometry + native format
+s.clear(Color::White);
+s.fill_rect(0, 0, s.width(), 4, Color::Black);          // a top rule
+s.draw_text(20, 20, s.width() - 40, 40, "Vanadium", Font::Large, Color::Black);
+s.refresh();                    // single panel refresh
+```
+
+`Screen` is stateless (the OS holds the framebuffer); the `test` V-App's `draw` demo uses
+it for large screens. **Speculos does not enforce the on-device NBGL constraints, so font
+rendering and the color palette must be validated on real hardware.**
+
 ## Numbering & stabilization
 
 Unlike `show_page` / `show_step` (which are genuinely Ledger-specific and live in
@@ -226,21 +329,35 @@ graphics, `display_blit` updates an in-memory virtual framebuffer and:
       (Gray4) and **nano s+** (Mono1).
 - [x] a graphics test in the [`sadik`](../apps/sadik/) V-App (`DrawTest`, screen-size
       aware), passing on native, flex and nano s+.
+- Command-stream ops:
+  - [x] `display_fill_rect` / `display_draw_text` end-to-end (constants, codegen, trait,
+        riscv + native delegates, VM `fill_rect` / `draw_text` in `ux_handler.rs`).
+  - [x] `display_refresh` made `RefreshMode`-aware.
+  - [x] SDK abstraction: [`ux::screen::Screen`](../app-sdk/src/ux/screen.rs); the `test`
+        V-App `draw` demo uses it on large screens. **Pending on-device validation**
+        (font ids, palette, positioning) — Speculos does not enforce these.
+  - [ ] rounded-rect / QR / icon ops (need `nbgl_draw.c` compiled into the VM or new
+        syscalls) and compressed-image ops (need asset tooling).
 - [ ] raw input events (`Touch` / `Button`) through `get_event`
 
 ## Open questions / risks
 
-- **Speed.** A full-screen *`Canvas` + `flush()`* is slow on large screens: the
-  framebuffer (~144 KB packed on Flex) lives in guest memory paged to the host 256
-  bytes at a time, and the VM's data page cache (~12 pages) is far smaller than the
-  frame, so it thrashes (~1000+ host round-trips). The fix, now implemented, is
-  `render_banded` (`app-sdk/src/ux/canvas.rs`): it renders the scene band by band
-  into one small, cache-resident buffer, so the framebuffer never round-trips to the
-  host, and pairs with the draw/refresh split (one panel refresh per frame). The
-  demo `draw` uses it; it runs with the default 64 KiB heap and is markedly faster
-  on Speculos and hardware. Remaining levers for incremental updates: dirty-rectangle
-  `flush_area` (avoid full redraws), and a larger data page cache. Worth measuring
-  with [`bench/`](../bench).
+- **Speed.** A full-screen *`Canvas` + `flush()`* is slow on large screens for two
+  independent reasons. (1) *Paging:* the framebuffer (~144 KB packed on Flex) lives in
+  guest memory paged to the host 256 bytes at a time, and the VM's data page cache
+  (~12 pages) is far smaller than the frame, so it thrashes (~1000+ host round-trips).
+  (2) *Interpreted rasterization:* every `embedded-graphics` pixel is rasterized in the
+  software RISC-V interpreter. `render_banded` (`app-sdk/src/ux/canvas.rs`) fixes (1) by
+  rendering band by band into one small, cache-resident buffer — but it makes (2) worse,
+  because it re-runs the whole scene closure once per band (≈75 passes on Flex with 8-row
+  bands), re-rasterizing each primitive's full bounding box every pass. So on real
+  hardware the blit path remains slow even banded. The structural fix, now implemented,
+  is the [command-stream ops](#accelerated-command-stream-ops): native drawing in the OS
+  framebuffer eliminates *both* costs (no guest framebuffer, no interpreted
+  rasterization). Use `Screen` for the common case and reserve the blit path for
+  arbitrary computed pixels. Remaining blit-path levers if it must be used: larger /
+  adaptive `render_banded` bands (fewer re-render passes), dirty-rectangle `flush_area`,
+  and a larger data page cache. Worth measuring on a real device with [`bench/`](../bench).
 - **NBGL low-level API**: `nbgl_frontDrawImage` / `nbgl_frontRefreshArea` are BOLOS
   syscalls whose C stubs link into `ledger_secure_sdk_sys` but are not exposed by
   its generated bindings, so the VM declares them itself via `extern "C"`. Verified

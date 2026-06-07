@@ -405,8 +405,10 @@ pub fn display_blit(
     1
 }
 
-pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, format: u32) -> u32 {
-    if common::ecall_constants::PixelFormat::from_u32(format).is_none() {
+pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> u32 {
+    // The refresh mode only affects the physical e-ink panel; on the virtual screen we
+    // just validate it and dump the framebuffer regardless.
+    if common::ecall_constants::RefreshMode::from_u32(mode).is_none() {
         return 0;
     }
     let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
@@ -422,6 +424,63 @@ pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, format: u32) -> u32 {
     #[cfg(feature = "gui")]
     gui::present(&screen);
 
+    1
+}
+
+// ---------------------------------------------------------------------------
+// Accelerated draw ops. On device these forward to native NBGL drawing in the OS
+// framebuffer; here we approximate them on the virtual screen so PPM/simulator output
+// stays representative. Text and QR codes need OS fonts/encoders we don't replicate, so
+// they are best-effort placeholders (the device/Speculos is the reference for those).
+// ---------------------------------------------------------------------------
+
+// Fills `[x, x+w) × [y, y+h)` (clipped to the screen) with `intensity` (0..=15).
+fn fill_screen_rect(x: usize, y: usize, w: usize, h: usize, intensity: u8) {
+    let mut screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
+    let (sw, sh) = (screen.width, screen.height);
+    let x1 = (x + w).min(sw);
+    let y1 = (y + h).min(sh);
+    for row in y..y1 {
+        for col in x..x1 {
+            screen.pixels[row * sw + col] = intensity;
+        }
+    }
+}
+
+pub fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> u32 {
+    let Some(color) = common::ecall_constants::Color::from_u32(color) else {
+        return 0;
+    };
+    {
+        let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
+        if (x as usize).saturating_add(w as usize) > screen.width
+            || (y as usize).saturating_add(h as usize) > screen.height
+        {
+            return 0;
+        }
+    }
+    fill_screen_rect(x as usize, y as usize, w as usize, h as usize, color.intensity());
+    1
+}
+
+pub fn display_draw_text(
+    _x: u32,
+    _y: u32,
+    _w: u32,
+    _h: u32,
+    text: *const u8,
+    text_len: usize,
+    color_font: u32,
+) -> u32 {
+    if common::ecall_constants::Color::from_u32(color_font >> 16).is_none() {
+        return 0;
+    }
+    // SAFETY: caller guarantees [text, text+text_len) is valid UTF-8 readable memory.
+    let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
+    if core::str::from_utf8(bytes).is_err() {
+        return 0;
+    }
+    // No font rasterization on the native backend; the draw succeeds but renders nothing.
     1
 }
 

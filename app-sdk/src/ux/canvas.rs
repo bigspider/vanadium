@@ -14,8 +14,17 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use common::ecall_constants::{
-    PixelFormat, DEVICE_PROPERTY_PIXEL_FORMAT, DEVICE_PROPERTY_SCREEN_SIZE,
+    PixelFormat, RefreshMode, DEVICE_PROPERTY_PIXEL_FORMAT, DEVICE_PROPERTY_SCREEN_SIZE,
 };
+
+/// The sensible default panel refresh mode for a given pixel format: full-color for
+/// grayscale screens, black & white for monochrome ones.
+fn default_refresh_mode(format: PixelFormat) -> RefreshMode {
+    match format {
+        PixelFormat::Gray4 => RefreshMode::FullColor,
+        PixelFormat::Mono1 => RefreshMode::BlackWhite,
+    }
+}
 
 use crate::ecalls;
 
@@ -185,7 +194,13 @@ impl Canvas {
 
         self.draw_area(x, y, w, h)
             && unsafe {
-                ecalls::display_refresh(x as u32, y as u32, w as u32, h as u32, self.format as u32) == 1
+                ecalls::display_refresh(
+                    x as u32,
+                    y as u32,
+                    w as u32,
+                    h as u32,
+                    default_refresh_mode(self.format) as u32,
+                ) == 1
             }
     }
 
@@ -328,7 +343,15 @@ where
         ok &= band.blit_band_to_screen(y0, bh);
         y0 += bh;
     }
-    ok && unsafe { ecalls::display_refresh(0, 0, width as u32, height as u32, format as u32) == 1 }
+    ok && unsafe {
+        ecalls::display_refresh(
+            0,
+            0,
+            width as u32,
+            height as u32,
+            default_refresh_mode(format) as u32,
+        ) == 1
+    }
 }
 
 /// Like [`render_banded_raw`], but using the current device's screen size and native

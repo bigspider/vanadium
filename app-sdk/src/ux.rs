@@ -1,6 +1,7 @@
 use core::{ops::Range, panic};
 
 pub mod canvas;
+pub mod screen;
 
 use crate::{
     ecalls,

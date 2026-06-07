@@ -161,13 +161,14 @@ forward_to_ecall! {
         format: u32,
     ) -> u32;
 
-    /// Pushes a previously drawn rectangle (see [`display_blit`]) to the physical
-    /// panel.
+    /// Pushes a previously drawn rectangle (see [`display_blit`] / the accelerated
+    /// draw ops) to the physical panel.
     ///
     /// # Parameters
     /// - `x`, `y`, `w`, `h`: The rectangle to refresh, in screen pixels.
-    /// - `format`: A [`common::ecall_constants::PixelFormat`] value; selects the
-    ///   panel refresh mode appropriate for the bit depth.
+    /// - `mode`: A [`common::ecall_constants::RefreshMode`] value selecting the panel
+    ///   refresh mode. Full-color modes give the best quality; partial / fast B&W
+    ///   modes are much cheaper for small or monochrome updates.
     ///
     /// # Returns
     /// 1 on success, 0 on error.
@@ -175,7 +176,51 @@ forward_to_ecall! {
     /// # Safety
     /// This call does not dereference any pointer, but is kept `unsafe` for
     /// consistency with the other graphics ECALLs.
-    pub unsafe fn display_refresh(x: u32, y: u32, w: u32, h: u32, format: u32) -> u32;
+    pub unsafe fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> u32;
+
+    /// Fills a rectangle with a solid palette color, directly in the OS framebuffer.
+    ///
+    /// Unlike [`display_blit`], no framebuffer is kept in guest RAM and no pixels are
+    /// rasterized in the guest: only a small descriptor crosses the ECALL boundary and
+    /// the OS does the fill natively. This does **not** refresh the panel; call
+    /// [`display_refresh`] once after a batch of draw ops.
+    ///
+    /// # Parameters
+    /// - `x`, `y`, `w`, `h`: The rectangle to fill, in screen pixels.
+    /// - `color`: A [`common::ecall_constants::Color`] palette value.
+    ///
+    /// # Returns
+    /// 1 on success, 0 on error (out-of-bounds rectangle or unknown color).
+    ///
+    /// # Safety
+    /// This call does not dereference any pointer, but is kept `unsafe` for
+    /// consistency with the other graphics ECALLs.
+    pub unsafe fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> u32;
+
+    /// Draws a UTF-8 string with an OS font, directly in the framebuffer (no guest-side
+    /// font rasterization). Does not refresh the panel.
+    ///
+    /// # Parameters
+    /// - `x`, `y`, `w`, `h`: The bounding area for the text, in screen pixels.
+    /// - `text`: Pointer to the UTF-8 string bytes.
+    /// - `text_len`: Length of `text` in bytes.
+    /// - `color_font`: Packed `(color << 16) | font_id`, where `color` is a
+    ///   [`common::ecall_constants::Color`] and `font_id` an OS font identifier.
+    ///
+    /// # Returns
+    /// 1 on success, 0 on error.
+    ///
+    /// # Safety
+    /// - `text` must be a valid pointer to at least `text_len` bytes of readable memory.
+    pub unsafe fn display_draw_text(
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        text: *const u8,
+        text_len: usize,
+        color_font: u32,
+    ) -> u32;
 
     /// Reads a 32-byte value from the specified storage slot.
     ///

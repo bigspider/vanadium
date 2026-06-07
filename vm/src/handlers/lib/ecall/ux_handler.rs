@@ -27,6 +27,47 @@ const TOKEN_TITLE: u8 = 6;
 #[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
 const TOKEN_TOPRIGHT: u8 = 7;
 
+// The device's native NBGL color depth, used for the area `bpp` of the accelerated
+// draw ops and refreshes. Stax/Flex are 4bpp grayscale; Apex and the Nanos are 1bpp.
+#[cfg(any(target_os = "stax", target_os = "flex"))]
+const NATIVE_BPP: sys::nbgl_bpp_t = sys::NBGL_BPP_4;
+#[cfg(any(target_os = "apex_p", target_os = "nanosplus", target_os = "nanox"))]
+const NATIVE_BPP: sys::nbgl_bpp_t = sys::NBGL_BPP_1;
+
+// Maps a semantic [`common::ecall_constants::Font`] to the device's matching NBGL font
+// id. The font sets differ per device (see `nbgl_fonts.h`); these are the regular /
+// semibold / large roles for the current target.
+fn font_id(font: common::ecall_constants::Font) -> sys::nbgl_font_id_e {
+    use common::ecall_constants::Font;
+    // BAGL_FONT_INTER_{REGULAR,SEMIBOLD,MEDIUM} for the device's font height, or the
+    // OPEN_SANS / NANO* equivalents on the small screens (see nbgl_fonts.h enum values).
+    #[cfg(target_os = "stax")] // SMALL_FONT_HEIGHT == 24
+    let id: u8 = match font {
+        Font::Regular => 0,
+        Font::Bold => 1,
+        Font::Large => 2,
+    };
+    #[cfg(target_os = "flex")] // SMALL_FONT_HEIGHT == 28
+    let id: u8 = match font {
+        Font::Regular => 11,
+        Font::Bold => 12,
+        Font::Large => 13,
+    };
+    #[cfg(target_os = "apex_p")] // SMALL_FONT_HEIGHT == 18
+    let id: u8 = match font {
+        Font::Regular => 17,
+        Font::Bold => 18,
+        Font::Large => 19,
+    };
+    #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
+    let id: u8 = match font {
+        Font::Regular => 10, // OPEN_SANS_REGULAR_11px_1bpp
+        Font::Bold => 8,     // OPEN_SANS_EXTRABOLD_11px_1bpp
+        Font::Large => 9,    // OPEN_SANS_LIGHT_16px_1bpp
+    };
+    id as sys::nbgl_font_id_e
+}
+
 // We use MaybeUninit to make sure that the static variable does not create
 // a .data section, which is not allowed.
 static mut LAST_EVENT: MaybeUninit<Option<(common::ux::EventCode, common::ux::EventData)>> =
@@ -353,16 +394,17 @@ impl UxHandler {
         Ok(())
     }
 
-    /// Pushes a previously drawn rectangle to the physical panel.
+    /// Pushes a previously drawn rectangle to the physical panel, using the requested
+    /// [`RefreshMode`](common::ecall_constants::RefreshMode).
     pub fn blit_refresh(
         &mut self,
         x: u32,
         y: u32,
         w: u32,
         h: u32,
-        format: common::ecall_constants::PixelFormat,
+        mode: common::ecall_constants::RefreshMode,
     ) -> Result<(), CommEcallError> {
-        use common::ecall_constants::PixelFormat;
+        use common::ecall_constants::RefreshMode;
 
         extern "C" {
             fn nbgl_frontRefreshArea(
@@ -372,9 +414,11 @@ impl UxHandler {
             );
         }
 
-        let (bpp, mode) = match format {
-            PixelFormat::Gray4 => (sys::NBGL_BPP_4, sys::FULL_COLOR_REFRESH),
-            PixelFormat::Mono1 => (sys::NBGL_BPP_1, sys::BLACK_AND_WHITE_REFRESH),
+        let nbgl_mode = match mode {
+            RefreshMode::FullColor => sys::FULL_COLOR_REFRESH,
+            RefreshMode::Partial => sys::FULL_COLOR_PARTIAL_REFRESH,
+            RefreshMode::BlackWhite => sys::BLACK_AND_WHITE_REFRESH,
+            RefreshMode::BlackWhiteFast => sys::BLACK_AND_WHITE_FAST_REFRESH,
         };
 
         let area = sys::nbgl_area_t {
@@ -383,11 +427,90 @@ impl UxHandler {
             width: w as u16,
             height: h as u16,
             backgroundColor: sys::WHITE,
-            bpp,
+            bpp: NATIVE_BPP,
         };
 
         unsafe {
-            nbgl_frontRefreshArea(&area, mode, sys::POST_REFRESH_FORCE_POWER_ON);
+            nbgl_frontRefreshArea(&area, nbgl_mode, sys::POST_REFRESH_FORCE_POWER_ON);
+        }
+
+        Ok(())
+    }
+
+    /// Fills a rectangle with a solid palette color, directly in the OS framebuffer
+    /// (no guest framebuffer, no per-pixel transfer). Does not refresh the panel.
+    ///
+    /// `nbgl_frontDrawRect` aligns `y0`/`height` to the hardware vertical alignment
+    /// itself (preserving the partial top/bottom rows), so unlike `blit_band` the
+    /// rectangle does not have to be 4-row aligned.
+    pub fn fill_rect(
+        &mut self,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        color: common::ecall_constants::Color,
+    ) -> Result<(), CommEcallError> {
+        extern "C" {
+            fn nbgl_frontDrawRect(area: *const sys::nbgl_area_t);
+        }
+
+        let area = sys::nbgl_area_t {
+            x0: x as i16,
+            y0: y as i16,
+            width: w as u16,
+            height: h as u16,
+            backgroundColor: color as u8 as sys::color_t,
+            bpp: NATIVE_BPP,
+        };
+
+        unsafe {
+            nbgl_frontDrawRect(&area);
+        }
+
+        Ok(())
+    }
+
+    /// Draws a UTF-8 string with an OS font directly in the framebuffer. Does not
+    /// refresh the panel. The text background is assumed light (`WHITE`) for font
+    /// anti-aliasing; draw text over light fills for best results.
+    pub fn draw_text(
+        &mut self,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        text: &[u8],
+        font: common::ecall_constants::Font,
+        color: common::ecall_constants::Color,
+    ) -> Result<(), CommEcallError> {
+        extern "C" {
+            fn nbgl_drawText(
+                area: *const sys::nbgl_area_t,
+                text: *const core::ffi::c_char,
+                text_len: u16,
+                font_id: sys::nbgl_font_id_e,
+                font_color: sys::color_t,
+            ) -> sys::nbgl_font_id_e;
+        }
+
+        let area = sys::nbgl_area_t {
+            x0: x as i16,
+            y0: y as i16,
+            width: w as u16,
+            height: h as u16,
+            backgroundColor: sys::WHITE,
+            bpp: NATIVE_BPP,
+        };
+
+        unsafe {
+            nbgl_drawText(
+                &area,
+                text.as_ptr() as *const core::ffi::c_char,
+                text.len() as u16,
+                font_id(font),
+                color as u8 as sys::color_t,
+            );
         }
 
         Ok(())

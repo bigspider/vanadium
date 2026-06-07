@@ -11,7 +11,17 @@ pub const ECALL_GET_EVENT: u32 = 10;
 pub const ECALL_DISPLAY_BLIT: u32 = 12;
 // Low-level graphics: push a previously drawn rectangle to the physical panel.
 pub const ECALL_DISPLAY_REFRESH: u32 = 13;
+// Accelerated drawing: fill a rectangle with a solid palette color directly in the
+// OS framebuffer (no guest framebuffer, no per-pixel work). See `Color`.
+pub const ECALL_DISPLAY_FILL_RECT: u32 = 14;
 pub const ECALL_GET_DEVICE_PROPERTY: u32 = 15;
+// Accelerated drawing: draw a UTF-8 string with an OS font directly in the framebuffer.
+pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 16;
+// Note: 18/19 were reserved for rounded-rect / QR-code ops, but the backing NBGL
+// drawing functions (`nbgl_drawRoundedRect`, `nbgl_drawQrCode`) live in `nbgl_draw.c`,
+// which is neither a BOLOS syscall nor compiled into the VM, so they are not yet
+// available. Only syscall-backed primitives (`nbgl_frontDrawRect`, `nbgl_drawText`)
+// are exposed for now.
 
 // Constants used for GET_DEVICE_PROPERTY
 
@@ -68,6 +78,107 @@ impl PixelFormat {
     /// Total number of bytes required to encode a `width` × `height` image.
     pub const fn buffer_len(self, width: usize, height: usize) -> usize {
         self.stride(width) * height
+    }
+}
+
+/// A color in NBGL's 4-color palette, used by the accelerated vector drawing
+/// ECALLs (`display_fill_rect`, `display_draw_line`, `display_draw_text`, …).
+///
+/// These ops are drawn natively in the OS framebuffer and only carry a tiny
+/// descriptor across the ECALL boundary, so they are vastly cheaper than rendering
+/// pixels in guest RAM and blitting. The trade-off is that they offer only the four
+/// palette colors; for full 16-level grayscale content (gradients, photos), use the
+/// `display_blit` path with [`PixelFormat::Gray4`].
+///
+/// The numeric values match the Ledger SDK `color_t` palette.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub enum Color {
+    Black = 0,
+    DarkGray = 1,
+    LightGray = 2,
+    White = 3,
+}
+
+impl Color {
+    /// Reconstructs a `Color` from its `u32` ECALL encoding.
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Color::Black),
+            1 => Some(Color::DarkGray),
+            2 => Some(Color::LightGray),
+            3 => Some(Color::White),
+            _ => None,
+        }
+    }
+
+    /// The equivalent 4bpp grayscale intensity (`0..=15`), matching the SDK's
+    /// `EXPAND_TO_4BPP` mapping (`(c << 2) | c`): Black=0, DarkGray=5, LightGray=10,
+    /// White=15. Used by the native/emulator backend.
+    pub const fn intensity(self) -> u8 {
+        let c = self as u8;
+        (c << 2) | c
+    }
+}
+
+/// Panel refresh mode for the `display_refresh` ECALL.
+///
+/// The panel refresh is the expensive part of putting something on an e-ink screen;
+/// picking a cheaper mode for small or monochrome updates is a major performance lever.
+/// These map to the Ledger SDK `nbgl_refresh_mode_t` values on device.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub enum RefreshMode {
+    /// Normal full-color refresh: best quality, slowest. Sensible default on grayscale
+    /// (`Gray4`) devices.
+    FullColor = 0,
+    /// Small partial full-color refresh, for localized updates (toggles, a status line).
+    Partial = 1,
+    /// Pure black & white refresh, contrast prioritized. Default on monochrome (`Mono1`)
+    /// devices.
+    BlackWhite = 2,
+    /// Pure black & white refresh, speed prioritized over contrast.
+    BlackWhiteFast = 3,
+}
+
+impl RefreshMode {
+    /// Reconstructs a `RefreshMode` from its `u32` ECALL encoding.
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(RefreshMode::FullColor),
+            1 => Some(RefreshMode::Partial),
+            2 => Some(RefreshMode::BlackWhite),
+            3 => Some(RefreshMode::BlackWhiteFast),
+            _ => None,
+        }
+    }
+}
+
+/// A semantic font selector for the `display_draw_text` ECALL.
+///
+/// Fonts are device-specific bitmap assets baked into the OS; rather than expose raw
+/// per-device font ids, V-Apps pick a semantic role and the VM maps it to the right
+/// `nbgl_font_id_e` for the current device.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub enum Font {
+    /// The standard body/regular text font.
+    Regular = 0,
+    /// The bold/semibold text font.
+    Bold = 1,
+    /// The large/title font.
+    Large = 2,
+}
+
+impl Font {
+    /// Reconstructs a `Font` from its `u32` ECALL encoding.
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Font::Regular),
+            1 => Some(Font::Bold),
+            2 => Some(Font::Large),
+            _ => None,
+        }
     }
 }
 
