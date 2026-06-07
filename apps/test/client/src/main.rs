@@ -37,6 +37,8 @@ enum CliCommand {
     NPrimes(u32),
     Ux(u8),
     Draw,
+    Kolibri,
+    GuiAccel,
     DeviceProp(u32),
     Print(String),
     Panic(String),
@@ -102,6 +104,8 @@ fn parse_command(line: &str) -> Result<CliCommand, String> {
                 Ok(CliCommand::Ux(id))
             }
             "draw" => Ok(CliCommand::Draw),
+            "kolibri" => Ok(CliCommand::Kolibri),
+            "fastgui" => Ok(CliCommand::GuiAccel),
             "deviceprop" => {
                 let arg = tokens
                     .next()
@@ -189,6 +193,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 CliCommand::Draw => {
                     let (width, height, ok) = test_client.draw().await?;
                     println!("Drew on a {}x{} screen (ok: {})", width, height, ok);
+                }
+                CliCommand::Kolibri => {
+                    let (width, height, ok) = test_client.kolibri().await?;
+                    println!("Rendered kolibri GUI on a {}x{} screen (ok: {})", width, height, ok);
+                }
+                CliCommand::GuiAccel => {
+                    let (width, height, ok) = test_client.gui_accel().await?;
+                    println!("Rendered accelerated GUI on a {}x{} screen (ok: {})", width, height, ok);
                 }
                 CliCommand::DeviceProp(property) => {
                     let value = test_client.device_props(property).await?;

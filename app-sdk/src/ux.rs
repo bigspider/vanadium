@@ -2,6 +2,9 @@ use core::{ops::Range, panic};
 
 pub mod canvas;
 pub mod screen;
+/// An accelerated `embedded-graphics` `DrawTarget` (requires the `embedded-graphics` feature).
+#[cfg(feature = "embedded-graphics")]
+pub mod screen_target;
 
 use crate::{
     ecalls,

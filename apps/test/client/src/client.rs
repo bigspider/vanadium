@@ -125,6 +125,38 @@ impl TestClient {
         Ok((width, height, ok))
     }
 
+    /// Asks the V-App to render the experimental kolibri-embedded-gui example and blit
+    /// it to the screen. Returns `(width, height, ok)`.
+    pub async fn kolibri(&mut self) -> Result<(u16, u16, bool), TestClientError> {
+        let msg = vec![Command::Kolibri as u8];
+
+        let result_raw = self.vapp_transport.send_message(&msg).await?;
+
+        if result_raw.len() != 5 {
+            return Err("Invalid response length".into());
+        }
+        let width = u16::from_be_bytes([result_raw[0], result_raw[1]]);
+        let height = u16::from_be_bytes([result_raw[2], result_raw[3]]);
+        let ok = result_raw[4] == 1;
+        Ok((width, height, ok))
+    }
+
+    /// Asks the V-App to render the **accelerated** GUI demo (same UI as `kolibri`, but
+    /// drawn with the native command-stream ops). Returns `(width, height, ok)`.
+    pub async fn gui_accel(&mut self) -> Result<(u16, u16, bool), TestClientError> {
+        let msg = vec![Command::GuiAccel as u8];
+
+        let result_raw = self.vapp_transport.send_message(&msg).await?;
+
+        if result_raw.len() != 5 {
+            return Err("Invalid response length".into());
+        }
+        let width = u16::from_be_bytes([result_raw[0], result_raw[1]]);
+        let height = u16::from_be_bytes([result_raw[2], result_raw[3]]);
+        let ok = result_raw[4] == 1;
+        Ok((width, height, ok))
+    }
+
     pub async fn device_props(&mut self, property_id: u32) -> Result<u32, TestClientError> {
         let mut msg: Vec<u8> = Vec::new();
         msg.extend_from_slice(&[Command::DeviceProp as u8]);
