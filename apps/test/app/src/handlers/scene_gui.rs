@@ -65,6 +65,9 @@ struct State {
 /// Fixed widget rectangles for the current screen. Computed once; touch hit-testing and
 /// scene building both read them, so they stay in sync.
 struct Layout {
+    /// True on the compact two-button (Nano) layout: most widgets are hidden (empty rects)
+    /// and the title uses a smaller font. Drives the device-specific bits of `build_scene`.
+    compact: bool,
     screen: Rect,
     icon: Rect,
     title: Rect,
@@ -81,7 +84,57 @@ struct Layout {
     done: Rect,
 }
 
+/// Picks a layout for the current device: the full touch layout on pointer screens, or a
+/// compact stack on the two-button Nano devices (whose 128×64 screen can't fit the former).
 fn layout(caps: &Capabilities) -> Layout {
+    if caps.input == InputModel::TwoButton {
+        compact_layout(caps)
+    } else {
+        touch_layout(caps)
+    }
+}
+
+/// Compact layout for the two-button Nano devices (128×64, no pointer). Only the title, the
+/// counter, and a button hint are shown; every touch-only widget (±, checkbox, slider, Done
+/// button, icon) collapses to an empty rect, which `build_scene` then draws as nothing — so
+/// the node *count and order* stay identical to the touch layout and the diff is unaffected.
+/// The physical buttons drive the counter (see the event loop).
+fn compact_layout(caps: &Capabilities) -> Layout {
+    let w = caps.size.w as i32;
+    let h = caps.size.h as i32;
+    let empty = Rect::new(0, 0, 0, 0);
+    // Stack three rows from the top, sized from the device's own font metrics so the layout
+    // still fits if the Nano fonts change.
+    let title_h = caps.font(Font::Bold).line_height as i32;
+    let line_h = caps.font(Font::Regular).line_height as i32;
+    let mut y = 2;
+    let title = Rect::new(0, y, w, title_h);
+    y += title_h + 4;
+    let counter = Rect::new(0, y, w, line_h);
+    y += line_h + 4;
+    // The "subtitle" slot is reused as the button hint on Nano (see `build_scene`).
+    let subtitle = Rect::new(0, y, w, line_h);
+    Layout {
+        compact: true,
+        screen: Rect::new(0, 0, w, h),
+        icon: empty,
+        title,
+        subtitle,
+        minus: empty,
+        counter,
+        plus: empty,
+        checkbox: empty,
+        checkbox_inner: empty,
+        checkbox_label: empty,
+        track: empty,
+        track_hit: empty,
+        slider_label: empty,
+        done: empty,
+    }
+}
+
+/// Full layout for the large touch screens (Flex/Stax/Apex).
+fn touch_layout(caps: &Capabilities) -> Layout {
     let w = caps.size.w as i32;
     let h = caps.size.h as i32;
     let m = 10;
@@ -100,6 +153,7 @@ fn layout(caps: &Capabilities) -> Layout {
         Rect::new(0, 0, 0, 0)
     };
     Layout {
+        compact: false,
         screen: Rect::new(0, 0, w, h),
         icon,
         title: Rect::new(0, 12, w, 28),
@@ -119,6 +173,11 @@ fn layout(caps: &Capabilities) -> Layout {
 
 // Position of the slider handle for the current level.
 fn handle_rect(l: &Layout, level: i32) -> Rect {
+    // No slider on the compact (Nano) layout: the track is empty, so the handle is empty too
+    // — otherwise it would compute a stray rect anchored at the screen origin.
+    if l.track.is_empty() {
+        return Rect::new(0, 0, 0, 0);
+    }
     let hw = 14;
     let travel = (l.track.w - hw).max(0);
     let x = l.track.x + travel * level.clamp(0, 100) / 100;
@@ -134,9 +193,13 @@ fn build_scene(l: &Layout, s: &State) -> Scene {
 
     // 0: background
     sc.rect(l.screen, bg);
-    // 1,2: title + subtitle
-    sc.text(l.title, "Vanadium UI", Font::Large, Color::Black, bg, Align::Center);
-    sc.text(l.subtitle, "semantic renderer", Font::Regular, Color::Black, bg, Align::Center);
+    // 1,2: title + subtitle. On the compact Nano layout the title uses a smaller font (Large
+    // is too tall for 64px) and the subtitle slot becomes a button hint — the touch widgets
+    // it would otherwise label are hidden there.
+    let title_font = if l.compact { Font::Bold } else { Font::Large };
+    let subtitle = if l.compact { "L:- R:+ both=Done" } else { "semantic renderer" };
+    sc.text(l.title, "Vanadium UI", title_font, Color::Black, bg, Align::Center);
+    sc.text(l.subtitle, subtitle, Font::Regular, Color::Black, bg, Align::Center);
 
     // 3,4: minus button
     sc.rect(l.minus, Color::LightGray);
@@ -247,6 +310,32 @@ pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
                         ButtonEvent::LeftPress => state.counter -= 1,
                         ButtonEvent::RightPress => state.counter += 1,
                         ButtonEvent::BothPress => state.done = true,
+                        _ => {}
+                    }
+                    true
+                }
+                // PRAGMATIC NANO INPUT PATH — read this together with the `Event::Button` arm
+                // above. On the two-button Nano devices the app's dashboard *step* (drawn by
+                // `ux_idle()` at startup) is still the active NBGL screen while this demo
+                // paints over it with raw primitives. So a button press is dispatched by the
+                // VM to NBGL's step-button callback, which hands it to us as a semantic
+                // `Action` (Left→PreviousPage, Right→NextPage, Both→Confirm) and coalesces
+                // away the raw `Button` event. The `Event::Button` arm above therefore never
+                // fires on Nano *today*; we map the equivalent Actions here instead. (Touch
+                // devices are unaffected: a touch that misses every NBGL object falls through
+                // to a raw `Touch`, which is why the pointer path needs no such shim.)
+                //
+                // This is deliberately a stopgap. The plan is to drive the UI purely from the
+                // new lower-level draw primitives, with no NBGL screen active — at which point
+                // these semantic Actions go away entirely and the raw `Event::Button` path
+                // becomes the single source of truth, and this arm can simply be deleted.
+                Event::Action(act) if !pointer => {
+                    idle = 0;
+                    match act {
+                        Action::PreviousPage => state.counter -= 1,
+                        Action::NextPage => state.counter += 1,
+                        Action::Confirm => state.done = true,
+                        Action::Quit => break,
                         _ => {}
                     }
                     true
