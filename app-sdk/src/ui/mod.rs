@@ -33,7 +33,7 @@ pub use caps::{capabilities, Capabilities, FontMetrics, InputModel};
 pub use refresh::{EinkPolicy, ImmediatePolicy, RefreshPolicy};
 pub use scene::{render_diff, Node, Scene};
 
-pub use common::ecall_constants::{Color, Font};
+pub use common::ecall_constants::{Color, Font, PixelFormat};
 
 /// Horizontal alignment of text within its box.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

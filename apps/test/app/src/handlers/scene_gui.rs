@@ -16,13 +16,44 @@ use alloc::{format, vec, vec::Vec};
 
 use sdk::executor::block_on;
 use sdk::ui::{
-    render_diff, Align, Capabilities, Color, Font, InputModel, Point, Rect, Renderer, Scene,
-    ScreenRenderer,
+    render_diff, Align, Capabilities, Color, Font, InputModel, PixelFormat, Point, Rect, Renderer,
+    Scene, ScreenRenderer,
 };
 use sdk::ux::{Action, ButtonEvent, Event, TouchState};
 
 /// On native, exit after this many idle tickers so a non-interactive run returns.
 const NATIVE_IDLE_TICKERS: u32 = 5;
+
+/// The Bitcoin logo as a 14×16 [`Gray4`](PixelFormat::Gray4) bitmap (black glyph on white,
+/// 2 px/byte, high nibble = left pixel, 7 bytes/row). Drawn via the accelerated blit path,
+/// so the host rasterizes it natively (`nbgl_frontDrawImage`) and the guest only ships
+/// these 112 bytes once. Generated from `glyphs/bitcoin_logo.gif` (LedgerHQ/app-bitcoin-new).
+///
+/// The glyph itself is 14×14, but NBGL's low-level image draw requires the blit `y` and
+/// `height` to be multiples of 4 (enforced by the `display_blit` ECALL). So the height is
+/// padded to 16 with a blank (white) row top and bottom, and the layout pins `y` to a
+/// multiple of 4 — the white padding blends into the white background.
+const BITCOIN_LOGO_W: i32 = 14;
+const BITCOIN_LOGO_H: i32 = 16;
+#[rustfmt::skip]
+const BITCOIN_LOGO_GRAY4: [u8; 112] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x00, 0x0f, 0xff, 0xff, 0xff, 0xf0, 0x00,
+    0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf0,
+    0x0f, 0xff, 0xf0, 0xf0, 0xff, 0xff, 0xf0,
+    0xff, 0xf0, 0x00, 0x00, 0x0f, 0xff, 0xff,
+    0xff, 0xff, 0x00, 0xff, 0x00, 0xff, 0xff,
+    0xff, 0xff, 0x00, 0xff, 0x00, 0xff, 0xff,
+    0xff, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff,
+    0xff, 0xff, 0x00, 0xff, 0x00, 0x0f, 0xff,
+    0xff, 0xff, 0x00, 0xff, 0xf0, 0x0f, 0xff,
+    0xff, 0xff, 0x00, 0xff, 0x00, 0x0f, 0xff,
+    0xff, 0xf0, 0x00, 0x00, 0x00, 0xff, 0xff,
+    0x0f, 0xff, 0xf0, 0xf0, 0xff, 0xff, 0xf0,
+    0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf0,
+    0x00, 0x0f, 0xff, 0xff, 0xff, 0xf0, 0x00,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+];
 
 struct State {
     counter: i32,
@@ -35,6 +66,7 @@ struct State {
 /// scene building both read them, so they stay in sync.
 struct Layout {
     screen: Rect,
+    icon: Rect,
     title: Rect,
     subtitle: Rect,
     minus: Rect,
@@ -57,8 +89,19 @@ fn layout(caps: &Capabilities) -> Layout {
     // tall enough to fully cover the glyphs when cleared — otherwise a taller device font
     // leaves a strip of stale pixels. Size it from the font's actual line height.
     let line_h = (caps.font(Font::Regular).line_height as i32).max(24);
+    // Bitcoin logo at the top-left, vertically centered in the title row. The packed bitmap
+    // is 4bpp, so it's only shown on Gray4 screens; an empty rect elsewhere drops the node.
+    // The blit `y` must be a multiple of 4 (NBGL constraint), so the centered position is
+    // rounded down to the nearest multiple of 4 (`& !3`).
+    let icon = if caps.pixel_format == PixelFormat::Gray4 {
+        let iy = (12 + (28 - BITCOIN_LOGO_H) / 2) & !3;
+        Rect::new(m, iy, BITCOIN_LOGO_W, BITCOIN_LOGO_H)
+    } else {
+        Rect::new(0, 0, 0, 0)
+    };
     Layout {
         screen: Rect::new(0, 0, w, h),
+        icon,
         title: Rect::new(0, 12, w, 28),
         subtitle: Rect::new(0, 46, w, 20),
         minus: Rect::new(m, 86, 56, 44),
@@ -120,6 +163,13 @@ fn build_scene(l: &Layout, s: &State) -> Scene {
     // 14,15: Done button
     sc.rect(l.done, Color::LightGray);
     sc.text(l.done, "Done", Font::Bold, Color::Black, Color::LightGray, Align::Center);
+
+    // Bitcoin logo (Gray4 blit). Static, drawn over the white background and away from any
+    // changing widget, so the diff redraws it only on the first full-screen paint. Empty
+    // (and thus skipped) on non-Gray4 screens.
+    if !l.icon.is_empty() {
+        sc.icon(l.icon, &BITCOIN_LOGO_GRAY4, PixelFormat::Gray4);
+    }
 
     sc
 }

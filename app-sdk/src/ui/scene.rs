@@ -10,6 +10,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use common::ecall_constants::PixelFormat;
+
 use super::backend::Renderer;
 use super::{Align, Color, ContentHint, Font, Rect};
 
@@ -27,13 +29,21 @@ pub enum Node {
         bg: Color,
         align: Align,
     },
+    /// A bitmap icon, blitted as a whole. `pixels` is packed in `format` for an
+    /// `area.w × area.h` image; the host draws it natively (`nbgl_frontDrawImage`), so the
+    /// only guest cost is shipping the (small) packed bytes once through the blit ECALL.
+    Icon {
+        area: Rect,
+        pixels: &'static [u8],
+        format: PixelFormat,
+    },
 }
 
 impl Node {
     /// The node's bounding box.
     pub fn area(&self) -> Rect {
         match self {
-            Node::Rect { area, .. } | Node::Text { area, .. } => *area,
+            Node::Rect { area, .. } | Node::Text { area, .. } | Node::Icon { area, .. } => *area,
         }
     }
 }
@@ -77,6 +87,15 @@ impl Scene {
             align,
         });
     }
+
+    /// Appends a bitmap icon occupying `area`, with `pixels` packed in `format`.
+    pub fn icon(&mut self, area: Rect, pixels: &'static [u8], format: PixelFormat) {
+        self.nodes.push(Node::Icon {
+            area,
+            pixels,
+            format,
+        });
+    }
 }
 
 // Redraws `n`, clipped to the damage region `clip`. Rectangles are clipped exactly; text
@@ -100,6 +119,14 @@ fn draw_clipped(n: &Node, r: &mut impl Renderer, clip: Rect) {
             r.fill_rect(a, *bg);
             r.text(*area, text, *font, *color, *bg, *align);
         }
+        // The blit op takes a whole bitmap, so an icon overlapping the damage region is
+        // redrawn in full (`*area`, not the clipped `a`). Icons here are small and static
+        // and sit away from changing widgets, so they are rarely in any damage region.
+        Node::Icon {
+            area,
+            pixels,
+            format,
+        } => r.blit(*area, pixels, *format),
     }
 }
 
