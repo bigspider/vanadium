@@ -610,7 +610,8 @@ pub fn display_draw_text(
     text_len: usize,
     color_font: u32,
 ) -> u32 {
-    let Some(_color) = common::ecall_constants::Color::from_u32(color_font >> 16) else {
+    // Packed as (bg << 16) | (fg << 8) | font_role (see Screen::draw_text).
+    let Some(_color) = common::ecall_constants::Color::from_u32((color_font >> 8) & 0xff) else {
         return 0;
     };
     // SAFETY: caller guarantees [text, text+text_len) is valid UTF-8 readable memory.
@@ -626,7 +627,7 @@ pub fn display_draw_text(
             prelude::*,
             text::{Baseline, Text},
         };
-        let style = MonoTextStyle::new(native_mono_font(color_font & 0xffff), Gray4::new(_color.intensity()));
+        let style = MonoTextStyle::new(native_mono_font(color_font & 0xff), Gray4::new(_color.intensity()));
         let mut screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
         let mut target = VsTarget {
             screen: &mut screen,

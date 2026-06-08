@@ -204,8 +204,9 @@ forward_to_ecall! {
     /// - `x`, `y`, `w`, `h`: The bounding area for the text, in screen pixels.
     /// - `text`: Pointer to the UTF-8 string bytes.
     /// - `text_len`: Length of `text` in bytes.
-    /// - `color_font`: Packed `(color << 16) | font_id`, where `color` is a
-    ///   [`common::ecall_constants::Color`] and `font_id` an OS font identifier.
+    /// - `color_font`: Packed `(bg << 16) | (color << 8) | font`, where `color` and `bg`
+    ///   are [`common::ecall_constants::Color`] values (text and anti-alias background) and
+    ///   `font` a [`common::ecall_constants::Font`].
     ///
     /// # Returns
     /// 1 on success, 0 on error.

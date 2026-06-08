@@ -518,9 +518,10 @@ impl UxHandler {
         Ok(())
     }
 
-    /// Draws a UTF-8 string with an OS font directly in the framebuffer. Does not
-    /// refresh the panel. The text background is assumed light (`WHITE`) for font
-    /// anti-aliasing; draw text over light fills for best results.
+    /// Draws a UTF-8 string with an OS font directly in the framebuffer. Does not refresh
+    /// the panel. `bg` is the color behind the text: NBGL fills the text box with it and
+    /// anti-aliases the glyphs against it, so pass the actual background (e.g. a button's
+    /// fill) to avoid a light fringe.
     pub fn draw_text(
         &mut self,
         x: u32,
@@ -530,6 +531,7 @@ impl UxHandler {
         text: &[u8],
         font: common::ecall_constants::Font,
         color: common::ecall_constants::Color,
+        bg: common::ecall_constants::Color,
     ) -> Result<(), CommEcallError> {
         extern "C" {
             fn nbgl_drawText(
@@ -546,7 +548,7 @@ impl UxHandler {
             y0: y as i16,
             width: w as u16,
             height: h as u16,
-            backgroundColor: sys::WHITE,
+            backgroundColor: bg as u8 as sys::color_t,
             bpp: NATIVE_BPP,
         };
 

@@ -98,7 +98,7 @@ fn draw_clipped(n: &Node, r: &mut impl Renderer, clip: Rect) {
             align,
         } => {
             r.fill_rect(a, *bg);
-            r.text(*area, text, *font, *color, *align);
+            r.text(*area, text, *font, *color, *bg, *align);
         }
     }
 }
@@ -198,7 +198,7 @@ mod tests {
         fn fill_rect(&mut self, area: Rect, color: Color) {
             self.fills.push((area, color));
         }
-        fn text(&mut self, area: Rect, text: &str, _f: Font, _c: Color, _a: Align) {
+        fn text(&mut self, area: Rect, text: &str, _f: Font, _c: Color, _bg: Color, _a: Align) {
             self.texts.push((area, text.into()));
         }
         fn blit(&mut self, _area: Rect, _px: &[u8], _fmt: PixelFormat) {}

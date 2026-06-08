@@ -1856,12 +1856,13 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         text_len: usize,
         color_font: u32,
     ) -> Result<u32, CommEcallError> {
-        let Some(color) = Color::from_u32(color_font >> 16) else {
+        let Some(font) = Font::from_u32(color_font & 0xff) else {
             return Ok(0);
         };
-        let Some(font) = Font::from_u32(color_font & 0xffff) else {
+        let Some(color) = Color::from_u32((color_font >> 8) & 0xff) else {
             return Ok(0);
         };
+        let bg = Color::from_u32((color_font >> 16) & 0xff).unwrap_or(Color::White);
         if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
             || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
         {
@@ -1876,7 +1877,7 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         if core::str::from_utf8(&buf).is_err() {
             return Ok(0);
         }
-        self.ux_handler.draw_text(x, y, w, h, &buf, font, color)?;
+        self.ux_handler.draw_text(x, y, w, h, &buf, font, color, bg)?;
         Ok(1)
     }
 

@@ -86,8 +86,9 @@ impl Screen {
         self.fill_rect(0, 0, self.width, self.height, color)
     }
 
-    /// Draws a UTF-8 string with an OS [`Font`] inside the given area. Text looks best
-    /// over a light background (the OS anti-aliases against white).
+    /// Draws a UTF-8 string with an OS [`Font`] inside the given area. The OS anti-aliases
+    /// the glyphs against `bg`, so pass the color actually behind the text (e.g. a button's
+    /// fill) to avoid a light fringe.
     pub fn draw_text(
         &self,
         x: u16,
@@ -97,8 +98,11 @@ impl Screen {
         text: &str,
         font: Font,
         color: Color,
+        bg: Color,
     ) -> bool {
-        let color_font = ((color as u32) << 16) | (font as u32);
+        // Packed as (bg << 16) | (fg << 8) | font_role; each field is small (Font 0..2,
+        // Color 0..3), see the display_draw_text ECALL.
+        let color_font = (font as u32) | ((color as u32) << 8) | ((bg as u32) << 16);
         unsafe {
             ecalls::display_draw_text(
                 x as u32,

@@ -31,8 +31,9 @@ pub trait Renderer {
     /// Fills a rectangle with a solid palette color.
     fn fill_rect(&mut self, area: Rect, color: Color);
 
-    /// Draws text within `area`, horizontally aligned per `align`.
-    fn text(&mut self, area: Rect, text: &str, font: Font, color: Color, align: Align);
+    /// Draws text within `area`, horizontally aligned per `align`. `bg` is the color behind
+    /// the text, used by the OS for anti-aliasing (pass the actual background).
+    fn text(&mut self, area: Rect, text: &str, font: Font, color: Color, bg: Color, align: Align);
 
     /// Escape hatch: blit pre-packed pixels (e.g. embedded-graphics output) into `area`.
     fn blit(&mut self, area: Rect, pixels: &[u8], format: PixelFormat);
@@ -114,7 +115,7 @@ impl Renderer for ScreenRenderer {
         self.mark_dirty(r);
     }
 
-    fn text(&mut self, area: Rect, text: &str, font: Font, color: Color, align: Align) {
+    fn text(&mut self, area: Rect, text: &str, font: Font, color: Color, bg: Color, align: Align) {
         if text.is_empty() {
             return;
         }
@@ -140,6 +141,7 @@ impl Renderer for ScreenRenderer {
             text,
             font,
             color,
+            bg,
         );
         // Mark the caller's full box dirty (it owns the background under the text).
         self.mark_dirty(area);

@@ -53,6 +53,10 @@ fn layout(caps: &Capabilities) -> Layout {
     let w = caps.size.w as i32;
     let h = caps.size.h as i32;
     let m = 10;
+    // The value label changes (its width varies with the digit count), so its box must be
+    // tall enough to fully cover the glyphs when cleared — otherwise a taller device font
+    // leaves a strip of stale pixels. Size it from the font's actual line height.
+    let line_h = (caps.font(Font::Regular).line_height as i32).max(24);
     Layout {
         screen: Rect::new(0, 0, w, h),
         title: Rect::new(0, 12, w, 28),
@@ -65,7 +69,7 @@ fn layout(caps: &Capabilities) -> Layout {
         checkbox_label: Rect::new(m + 56, 150, w - (m + 56), 40),
         track: Rect::new(m + 10, 222, w - 2 * (m + 10), 6),
         track_hit: Rect::new(m + 10, 208, w - 2 * (m + 10), 34),
-        slider_label: Rect::new(0, 252, w, 20),
+        slider_label: Rect::new(m + 10, 250, w - 2 * (m + 10), line_h),
         done: Rect::new(m, 300, 110, 46),
     }
 }
@@ -109,8 +113,9 @@ fn build_scene(l: &Layout, s: &State) -> Scene {
     // 11,12: slider track + handle
     sc.rect(l.track, Color::LightGray);
     sc.rect(handle_rect(l, s.level), Color::Black);
-    // 13: slider value label
-    sc.text(l.slider_label, format!("level: {}", s.level), Font::Regular, Color::Black, bg, Align::Center);
+    // 13: slider value label. Left-aligned so "level:" stays put as the digit count of the
+    // value changes (a centered label would shift horizontally each time).
+    sc.text(l.slider_label, format!("level: {}", s.level), Font::Regular, Color::Black, bg, Align::Left);
 
     // 14,15: Done button
     sc.rect(l.done, Color::LightGray);

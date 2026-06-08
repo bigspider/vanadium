@@ -25,7 +25,7 @@ fn button(s: &Screen, x: u16, y: u16, w: u16, h: u16, label: &str) -> bool {
     ok &= s.fill_rect(x + 2, y + 2, w.saturating_sub(4), h.saturating_sub(4), Color::LightGray);
     // Rough centering for short labels (no text-measurement op exposed).
     let tx = x + w / 2 - 5;
-    ok &= s.draw_text(tx, y + h / 2 - 12, 24, 28, label, Font::Bold, Color::Black);
+    ok &= s.draw_text(tx, y + h / 2 - 12, 24, 28, label, Font::Bold, Color::Black, Color::LightGray);
     ok
 }
 
@@ -41,7 +41,7 @@ pub fn handle_gui_accel(_data: &[u8]) -> Vec<u8> {
     ok &= s.clear(Color::White);
 
     // Title + subtitle (native OS fonts).
-    ok &= s.draw_text(10, 10, w - 20, 40, "Vanadium + accelerated GUI", Font::Large, Color::Black);
+    ok &= s.draw_text(10, 10, w - 20, 40, "Vanadium + accelerated GUI", Font::Large, Color::Black, Color::White);
     ok &= s.draw_text(
         10,
         54,
@@ -50,12 +50,13 @@ pub fn handle_gui_accel(_data: &[u8]) -> Vec<u8> {
         "fill_rect + draw_text (native, 1 refresh)",
         Font::Regular,
         Color::Black,
+        Color::White,
     );
 
     // Button row with a counter.
     let by = 96;
     ok &= button(&s, 10, by, 52, 44, "-");
-    ok &= s.draw_text(74, by + 12, 140, 24, "counter: 0", Font::Regular, Color::Black);
+    ok &= s.draw_text(74, by + 12, 140, 24, "counter: 0", Font::Regular, Color::Black, Color::White);
     ok &= button(&s, 210, by, 52, 44, "+");
 
     // Checkbox (drawn "checked": filled inner square).
@@ -63,14 +64,14 @@ pub fn handle_gui_accel(_data: &[u8]) -> Vec<u8> {
     ok &= s.fill_rect(10, cy, 36, 36, Color::Black);
     ok &= s.fill_rect(12, cy + 2, 32, 32, Color::White);
     ok &= s.fill_rect(17, cy + 7, 22, 22, Color::Black);
-    ok &= s.draw_text(56, cy + 6, w - 66, 24, "enabled", Font::Regular, Color::Black);
+    ok &= s.draw_text(56, cy + 6, w - 66, 24, "enabled", Font::Regular, Color::Black, Color::White);
 
     // Slider: a thin track with a handle at ~42%.
     let sy = 220;
     ok &= s.fill_rect(10, sy + 8, w - 20, 4, Color::DarkGray);
     let handle_x = 10 + ((w - 20) as u32 * 42 / 100) as u16;
     ok &= s.fill_rect(handle_x, sy, 12, 20, Color::Black);
-    ok &= s.draw_text(10, sy + 28, w - 20, 24, "level", Font::Regular, Color::Black);
+    ok &= s.draw_text(10, sy + 28, w - 20, 24, "level", Font::Regular, Color::Black, Color::White);
 
     // One panel refresh shows the whole frame.
     ok &= s.refresh();

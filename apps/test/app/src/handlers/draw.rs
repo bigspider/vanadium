@@ -69,7 +69,7 @@ fn draw_large_pattern() -> bool {
     }
 
     // Title, rendered with an OS font (no guest-side glyph rasterization).
-    ok &= s.draw_text(20, h - 64, w - 40, 40, "Vanadium", Font::Large, Color::Black);
+    ok &= s.draw_text(20, h - 64, w - 40, 40, "Vanadium", Font::Large, Color::Black, Color::White);
 
     // A single panel refresh makes the whole frame visible.
     ok && s.refresh()
