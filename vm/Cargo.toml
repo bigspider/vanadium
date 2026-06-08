@@ -10,7 +10,10 @@ serde = {version="1.0.192", default-features = false, features = ["derive"]}
 hex = { version = "0.4.3", default-features = false }
 numtoa = "0.2.4"
 postcard = { version = "1.1.1", default-features = false, features = ["alloc"] }
-ledger_device_sdk = { git = "https://github.com/LedgerHQ/ledger-device-rust-sdk.git", branch = "vanadium", features = ["debug", "nano_nbgl", "io_new", "sys"] }
+# Fork of LedgerHQ/ledger-device-rust-sdk's `vanadium` branch, extended to expose touch
+# coordinates in DecodedEventType::Touch (upstream feeds them to NBGL and drops them).
+# Re-point this at upstream once that change is merged there.
+ledger_device_sdk = { git = "https://github.com/bigspider/ledger-device-rust-sdk.git", branch = "kolibri", features = ["debug", "nano_nbgl", "io_new", "sys"] }
 
 zeroize = "1.8.1"
 hex-literal = "0.4.1"
@@ -66,12 +69,3 @@ icon = "icons/vanadium_32x32_bw.png"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("stax", "flex", "apex_p", "nanos", "nanox", "nanosplus"))'] }
 
 [workspace]
-
-# Local patch of the Ledger SDK (vanadium branch, commit e9f6e7f) to expose touch
-# coordinates: DecodedEventType::Touch carries { x, y, state } parsed from the seph
-# finger packet (upstream only feeds them to NBGL and drops them). The clone lives
-# beside this repo; revert this section once the change lands on the `vanadium` branch.
-[patch."https://github.com/LedgerHQ/ledger-device-rust-sdk.git"]
-ledger_device_sdk = { path = "../../ledger-device-rust-sdk-vanadium/ledger_device_sdk" }
-ledger_secure_sdk_sys = { path = "../../ledger-device-rust-sdk-vanadium/ledger_secure_sdk_sys" }
-include_gif = { path = "../../ledger-device-rust-sdk-vanadium/include_gif" }
