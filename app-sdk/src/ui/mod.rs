@@ -25,13 +25,19 @@
 
 pub mod backend;
 pub mod caps;
+pub mod icons;
 pub mod refresh;
 pub mod scene;
+pub mod widgets;
 
 pub use backend::{Renderer, ScreenRenderer};
 pub use caps::{capabilities, Capabilities, FontMetrics, InputModel};
+pub use icons::{Icon, IconBitmap};
 pub use refresh::{EinkPolicy, ImmediatePolicy, RefreshPolicy};
 pub use scene::{render_diff, Node, Scene};
+pub use widgets::{
+    button, draw_icon_centered, nav_from_button, touch_release, wrap_lines, Nav, Surface,
+};
 
 pub use common::ecall_constants::{Color, Font, PixelFormat};
 

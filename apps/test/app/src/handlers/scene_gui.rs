@@ -304,38 +304,16 @@ pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
                     let p = Point::new(te.x as i32, te.y as i32);
                     on_touch(&l, &mut state, p, te.state == TouchState::Pressed)
                 }
+                // On the two-button Nano devices the raw button events now reach us directly:
+                // `ux_idle()` draws with the low-level primitives and leaves no NBGL screen
+                // active, so the VM no longer intercepts the buttons into semantic `Action`s.
+                // Left/right adjust the counter, both-press finishes.
                 Event::Button(btn) if !pointer => {
                     idle = 0;
                     match btn {
                         ButtonEvent::LeftPress => state.counter -= 1,
                         ButtonEvent::RightPress => state.counter += 1,
                         ButtonEvent::BothPress => state.done = true,
-                        _ => {}
-                    }
-                    true
-                }
-                // PRAGMATIC NANO INPUT PATH — read this together with the `Event::Button` arm
-                // above. On the two-button Nano devices the app's dashboard *step* (drawn by
-                // `ux_idle()` at startup) is still the active NBGL screen while this demo
-                // paints over it with raw primitives. So a button press is dispatched by the
-                // VM to NBGL's step-button callback, which hands it to us as a semantic
-                // `Action` (Left→PreviousPage, Right→NextPage, Both→Confirm) and coalesces
-                // away the raw `Button` event. The `Event::Button` arm above therefore never
-                // fires on Nano *today*; we map the equivalent Actions here instead. (Touch
-                // devices are unaffected: a touch that misses every NBGL object falls through
-                // to a raw `Touch`, which is why the pointer path needs no such shim.)
-                //
-                // This is deliberately a stopgap. The plan is to drive the UI purely from the
-                // new lower-level draw primitives, with no NBGL screen active — at which point
-                // these semantic Actions go away entirely and the raw `Event::Button` path
-                // becomes the single source of truth, and this arm can simply be deleted.
-                Event::Action(act) if !pointer => {
-                    idle = 0;
-                    match act {
-                        Action::PreviousPage => state.counter -= 1,
-                        Action::NextPage => state.counter += 1,
-                        Action::Confirm => state.done = true,
-                        Action::Quit => break,
                         _ => {}
                     }
                     true

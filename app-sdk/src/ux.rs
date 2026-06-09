@@ -1,4 +1,4 @@
-use core::{ops::Range, panic};
+use core::ops::Range;
 
 pub mod canvas;
 pub mod screen;
@@ -6,13 +6,7 @@ pub mod screen;
 #[cfg(feature = "embedded-graphics")]
 pub mod screen_target;
 
-use crate::{
-    ecalls,
-    ux_generated::{
-        make_page_review_pairs_content, make_page_review_pairs_final_confirmationbutton,
-        make_page_review_pairs_final_longpress, make_page_review_pairs_intro,
-    },
-};
+use alloc::format;
 use alloc::vec::Vec;
 
 use common::ecall_constants::DEVICE_PROPERTY_ID;
@@ -21,7 +15,11 @@ pub use common::ux::{
     NavigationInfo, Page, PageContent, PageContentInfo, TagValue, TouchEvent, TouchState,
 };
 
-use crate::ux_generated;
+use crate::ecalls;
+use crate::ui::{
+    button, draw_icon_centered, icons, nav_from_button, touch_release, wrap_lines, Align, Color,
+    Font, InputModel, Nav, Rect, Scene, Surface,
+};
 
 // Returns true if the device supports the page UX model, false if it supports the step UX model.
 // It panics for unsupported devices
@@ -35,104 +33,6 @@ pub fn has_page_api() -> bool {
         0x2c970050 => false, // Ledger Nano S+
         _ => panic!("Unsupported device"),
     }
-}
-
-// Per-device layout metrics used for height-aware pair packing in review_pairs.
-struct PageLayoutMetrics {
-    // Approximate number of characters that fit on one line for the tag (bold, smaller font).
-    tag_chars_per_line: usize,
-    // Height in pixels of one wrapped tag line.
-    tag_line_height_px: u32,
-    // Approximate number of characters that fit on one line for the value (regular font).
-    value_chars_per_line: usize,
-    // Height in pixels of one wrapped value line.
-    value_line_height_px: u32,
-    // Vertical padding added below each pair in pixels.
-    pair_padding_px: u32,
-    // Usable content area height in pixels (screen height minus navigation bar).
-    content_height_px: u32,
-}
-
-// TODO: these metrics will need to be fine-tuned
-fn get_page_layout_metrics() -> PageLayoutMetrics {
-    match ecalls::get_device_property(DEVICE_PROPERTY_ID) {
-        // Native target: not a real device, use Stax values as a sensible default.
-        // Stax
-        0 | 0x2c970060 => PageLayoutMetrics {
-            tag_chars_per_line: 20,
-            tag_line_height_px: 28,
-            value_chars_per_line: 17,
-            value_line_height_px: 40,
-            pair_padding_px: 20,
-            content_height_px: 448,
-        },
-        // Flex
-        0x2c970070 => PageLayoutMetrics {
-            tag_chars_per_line: 20,
-            tag_line_height_px: 32,
-            value_chars_per_line: 17,
-            value_line_height_px: 40,
-            pair_padding_px: 20,
-            content_height_px: 376,
-        },
-        // Apex_p
-        0x2c970080 => PageLayoutMetrics {
-            tag_chars_per_line: 25,
-            tag_line_height_px: 18,
-            value_chars_per_line: 17,
-            value_line_height_px: 28,
-            pair_padding_px: 16,
-            content_height_px: 264,
-        },
-        _ => panic!("Unsupported device"),
-    }
-}
-
-// Estimates the rendered height in pixels of a single TagValue pair.
-fn estimate_pair_height(metrics: &PageLayoutMetrics, pair: &TagValue) -> u32 {
-    let tag_lines = ((pair.tag.len() + metrics.tag_chars_per_line - 1) / metrics.tag_chars_per_line)
-        .max(1) as u32;
-    let value_lines = ((pair.value.len() + metrics.value_chars_per_line - 1)
-        / metrics.value_chars_per_line)
-        .max(1) as u32;
-    tag_lines * metrics.tag_line_height_px
-        + value_lines * metrics.value_line_height_px
-        + metrics.pair_padding_px
-}
-
-// Greedily packs pairs into pages, returning a list of index ranges (one per page).
-// At least one pair is always placed on a page, even if its estimated height exceeds
-// content_height_px, to prevent an infinite loop on very long single values.
-fn compute_pair_page_ranges(metrics: &PageLayoutMetrics, pairs: &[TagValue]) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    while start < pairs.len() {
-        let mut end = start + 1; // always include at least one pair
-        let mut height = estimate_pair_height(metrics, &pairs[start]);
-        while end < pairs.len() {
-            let next_height = estimate_pair_height(metrics, &pairs[end]);
-            if height + next_height > metrics.content_height_px {
-                break;
-            }
-            height += next_height;
-            end += 1;
-        }
-        ranges.push(start..end);
-        start = end;
-    }
-    ranges
-}
-
-#[inline(always)]
-pub(crate) fn show_page_raw(page: &[u8]) {
-    // SAFETY: page is a valid slice reference.
-    unsafe { ecalls::show_page(page.as_ptr(), page.len()) };
-}
-
-#[inline(always)]
-pub(crate) fn show_step_raw(step: &[u8]) {
-    // SAFETY: step is a valid slice reference.
-    unsafe { ecalls::show_step(step.as_ptr(), step.len()) };
 }
 
 /// Blocks until an event is received, then returns it.
@@ -172,14 +72,11 @@ pub async fn get_event() -> Event {
 pub async fn wait(n: u32) {
     let mut n_tickers = 0u32;
     loop {
-        match get_event().await {
-            Event::Ticker => {
-                n_tickers += 1;
-                if n_tickers >= n {
-                    return;
-                }
+        if let Event::Ticker = get_event().await {
+            n_tickers += 1;
+            if n_tickers >= n {
+                return;
             }
-            _ => {}
         }
     }
 }
@@ -193,164 +90,249 @@ pub async fn get_action() -> Action {
     }
 }
 
-// implementation of review_pairs() for the page API
-async fn __page_review_pairs(
-    intro_text: &str,
-    intro_subtext: &str,
-    pairs: &[TagValue],
-    final_text: &str,
-    final_button_text: &str,
-    long_press: bool,
+// =============================================================================
+// Low-level UI flows.
+//
+// These render directly with the accelerated `Screen` primitives (fill/text/blit) via the
+// `ui` layer — they do NOT use NBGL pages or steps, and they consume *raw* input events
+// (`Touch`/`Button`) rather than NBGL's semantic `Action`s. The two input models are driven
+// from the device `Capabilities`:
+//
+//  - Pointer (touch) devices show the whole flow on one screen and hit-test taps;
+//  - the two-button Nano devices page through the flow with left/right and confirm with
+//    both buttons (see `Nav`).
+//
+// For two-button input we accept *both* the raw `Button` events (the post-NBGL world) and
+// the equivalent semantic `Action`s, via `nav_from_event`. This keeps these flows working
+// during the migration while a legacy NBGL home screen may still be active and coalescing
+// raw buttons into `Action`s (see the SDK `App` dashboard).
+// =============================================================================
+
+const MARGIN: i32 = 16;
+const BTN_H: i32 = 48;
+
+// Vertical line height of an OS font on this device, in pixels.
+fn line_h(surf: &Surface, font: Font) -> i32 {
+    surf.caps().font(font).line_height as i32
+}
+
+// Word-wraps `text` in `font` to `w` pixels and appends one text node per line starting at
+// `y`, returning the `y` just below the block.
+fn text_block(
+    surf: &Surface,
+    sc: &mut Scene,
+    x: i32,
+    y: i32,
+    w: i32,
+    text: &str,
+    font: Font,
+    align: Align,
+) -> i32 {
+    let lh = line_h(surf, font);
+    let lines = wrap_lines(text, w, |s| surf.measure(font, s).w as i32);
+    let mut yy = y;
+    for line in lines {
+        sc.text(
+            Rect::new(x, yy, w, lh),
+            line,
+            font,
+            Color::Black,
+            Color::White,
+            align,
+        );
+        yy += lh;
+    }
+    yy
+}
+
+// Total pixel height a wrapped block of `text` in `font` would occupy.
+fn block_height(surf: &Surface, w: i32, text: &str, font: Font) -> i32 {
+    let n = wrap_lines(text, w, |s| surf.measure(font, s).w as i32).len() as i32;
+    n * line_h(surf, font)
+}
+
+// Maps an input event to a navigation intent for the two-button flows, accepting both raw
+// `Button` events and the equivalent NBGL `Action`s (see the module note above).
+pub(crate) fn nav_from_event(e: &Event) -> Option<Nav> {
+    match e {
+        Event::Button(b) => nav_from_button(*b),
+        Event::Action(Action::PreviousPage) => Some(Nav::Prev),
+        Event::Action(Action::NextPage) => Some(Nav::Next),
+        Event::Action(Action::Confirm) => Some(Nav::Select),
+        _ => None,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// show_info
+// -----------------------------------------------------------------------------
+
+/// Paints a status icon (on the grayscale touch panels) and a centered message, and returns
+/// immediately. Shared by [`show_info`] (which then waits) and `App::show_info` (which keeps
+/// the app running and clears the screen on a timeout).
+pub(crate) fn paint_info(icon: Icon, text: &str) {
+    let mut surf = Surface::new();
+    let screen = surf.screen();
+    let bg = Color::White;
+
+    let content_w = screen.w - 2 * MARGIN;
+    let bitmap = icons::gray4(icon); // None on monochrome / no-art icons
+    let icon_h = bitmap.as_ref().map(|b| b.h + 16).unwrap_or(0);
+    let text_h = block_height(&surf, content_w, text, Font::Large);
+    let total = icon_h + text_h;
+    let mut y = (screen.h - total) / 2;
+    if y < MARGIN {
+        y = MARGIN;
+    }
+
+    let mut sc = Scene::new();
+    sc.rect(screen, bg);
+    if let Some(b) = &bitmap {
+        let r = draw_icon_centered(&mut sc, screen, b, y);
+        y = r.bottom() + 16;
+    }
+    text_block(&surf, &mut sc, MARGIN, y, content_w, text, Font::Large, Align::Center);
+    surf.paint(&sc);
+}
+
+/// Shows a status icon (on the grayscale touch panels) and a centered message for ~2s.
+pub async fn show_info(icon: Icon, text: &str) {
+    paint_info(icon, text);
+    wait(20).await; // ~2 seconds
+}
+
+// -----------------------------------------------------------------------------
+// show_spinner
+// -----------------------------------------------------------------------------
+
+/// Draws a "busy" screen with `text` and returns immediately (the caller keeps working).
+pub fn show_spinner(text: &str) {
+    let mut surf = Surface::new();
+    let screen = surf.screen();
+    let bg = Color::White;
+    let content_w = screen.w - 2 * MARGIN;
+
+    let lh = line_h(&surf, Font::Large);
+    let text_h = block_height(&surf, content_w, text, Font::Large);
+    let total = text_h + lh; // text + a "..." line
+    let y = ((screen.h - total) / 2).max(MARGIN);
+
+    let mut sc = Scene::new();
+    sc.rect(screen, bg);
+    let y = text_block(&surf, &mut sc, MARGIN, y, content_w, text, Font::Large, Align::Center);
+    sc.text(
+        Rect::new(MARGIN, y, content_w, lh),
+        "...",
+        Font::Large,
+        Color::Black,
+        bg,
+        Align::Center,
+    );
+    surf.paint(&sc);
+}
+
+// -----------------------------------------------------------------------------
+// show_confirm_reject
+// -----------------------------------------------------------------------------
+
+/// Asks the user to confirm or reject. Returns `true` on confirm, `false` on reject.
+pub async fn show_confirm_reject(title: &str, text: &str, confirm: &str, reject: &str) -> bool {
+    let mut surf = Surface::new();
+    if surf.caps().input == InputModel::Pointer {
+        confirm_reject_pointer(&mut surf, title, text, confirm, reject).await
+    } else {
+        confirm_reject_two_button(&mut surf, title, text, confirm, reject).await
+    }
+}
+
+async fn confirm_reject_pointer(
+    surf: &mut Surface,
+    title: &str,
+    text: &str,
+    confirm: &str,
+    reject: &str,
 ) -> bool {
-    // As this is still too slow to compute everything at once, we use a 'streaming' approach where we compute
-    // the next page only after showing the current one.
-    // While we're computing the page, we're not able to listen to touch events, so it will currently miss
-    // user touches something before the precomputation of the next page is completed.
+    let screen = surf.screen();
+    let bg = Color::White;
+    let content_w = screen.w - 2 * MARGIN;
 
-    // Calculate total number of pages using height-aware pair packing.
-    let metrics = get_page_layout_metrics();
-    let pair_page_ranges = compute_pair_page_ranges(&metrics, pairs);
-    let n_pair_pages = pair_page_ranges.len() as u32;
-    let n_pages = 2 + n_pair_pages; // intro + pair pages + final
+    // Two buttons side by side along the bottom: reject (left), confirm (right).
+    let by = screen.h - BTN_H - MARGIN;
+    let bw = (content_w - MARGIN) / 2;
+    let reject_btn = Rect::new(MARGIN, by, bw, BTN_H);
+    let confirm_btn = Rect::new(screen.w - MARGIN - bw, by, bw, BTN_H);
 
-    // Initialize with capacity, but start empty
-    let mut serialized_pages = Vec::with_capacity(n_pages as usize);
-
-    // Compute and add the first page (intro)
-    serialized_pages.push(make_page_review_pairs_intro(
-        0,
-        n_pages,
-        intro_text,
-        intro_subtext,
-    ));
-
-    let mut active_page = 0;
+    let mut sc = Scene::new();
+    sc.rect(screen, bg);
+    let mut y = MARGIN + 8;
+    y = text_block(surf, &mut sc, MARGIN, y, content_w, title, Font::Large, Align::Center);
+    y += 8;
+    text_block(surf, &mut sc, MARGIN, y, content_w, text, Font::Regular, Align::Center);
+    button(&mut sc, reject_btn, reject, Font::Bold);
+    button(&mut sc, confirm_btn, confirm, Font::Bold);
+    surf.paint(&sc);
 
     loop {
-        // Show the current page
-        show_page_raw(&serialized_pages[active_page]);
-
-        // Compute the next page if it exists and hasn't been computed
-        if active_page + 1 < n_pages as usize && serialized_pages.len() == active_page + 1 {
-            let next_page_index = active_page + 1;
-            let next_page = if next_page_index == (n_pages - 1) as usize {
-                // Final page
-                if long_press {
-                    make_page_review_pairs_final_longpress(
-                        next_page_index as u32,
-                        n_pages,
-                        final_text,
-                        final_button_text,
-                    )
-                } else {
-                    make_page_review_pairs_final_confirmationbutton(
-                        next_page_index as u32,
-                        n_pages,
-                        final_text,
-                        final_button_text,
-                    )
-                }
-            } else {
-                // Pair page (indices 1 to n_pair_pages)
-                let chunk_index = next_page_index - 1;
-                let pair_chunk = &pairs[pair_page_ranges[chunk_index].clone()];
-                make_page_review_pairs_content(next_page_index as u32, n_pages, pair_chunk)
-            };
-            serialized_pages.push(next_page);
-        }
-
-        // Process events
-        loop {
-            match get_event().await {
-                Event::Action(Action::PreviousPage) if active_page > 0 => {
-                    active_page -= 1;
-                    break;
-                }
-                Event::Action(Action::NextPage) if active_page + 1 < n_pages as usize => {
-                    active_page += 1;
-                    break;
-                }
-                Event::Action(Action::Quit) => {
-                    return false;
-                }
-                Event::Action(Action::Confirm) => {
-                    return true;
-                }
-                _ => {} // Ignore other events
+        let event = get_event().await;
+        if let Some(p) = touch_release(&event) {
+            if confirm_btn.contains(p) {
+                return true;
+            }
+            if reject_btn.contains(p) {
+                return false;
             }
         }
     }
 }
 
-// implementation of review_pairs() for the step API
-async fn __step_review_pairs(
-    intro_text: &str,
-    intro_subtext: &str,
-    pairs: &[TagValue],
-    _final_text: &str,
-    final_button_text: &str,
-    _long_press: bool,
+async fn confirm_reject_two_button(
+    surf: &mut Surface,
+    title: &str,
+    text: &str,
+    confirm: &str,
+    reject: &str,
 ) -> bool {
-    // Calculate total number of pages
-    let n_pair_steps = pairs.len() as u32; // TODO: this doesn't quite work for pairs that are split into multiple screens
-    let n_steps = 3 + n_pair_steps; // intro + pair steps + confirm + reject
-
-    let mut cur_step = 0;
-
+    // Three steps: the message, then a confirm step, then a reject step.
+    let n_steps: usize = 3;
+    let mut step = 0usize;
     loop {
-        let pos = step_pos(n_steps, cur_step);
-        match cur_step {
-            0 => {
-                ux_generated::show_step_text_subtext(
-                    step_pos(n_steps, 0),
-                    intro_text,
-                    intro_subtext,
-                );
-            }
-            step if step >= 1 && step <= n_pair_steps => {
-                let pair_index = cur_step - 1;
-                let pair = pairs.get(pair_index as usize).unwrap();
-                ux_generated::show_step_text_subtext(pos, &pair.tag, &pair.value);
-            }
-            step if step == n_pair_steps + 1 => {
-                ux_generated::show_step_centered_info_nosubtext(
-                    pos,
-                    final_button_text,
-                    Icon::Confirm,
-                );
-            }
-            step if step == n_pair_steps + 2 => {
-                ux_generated::show_step_reject(pos);
-            }
-            _ => {
-                panic!("Invalid step");
-            }
+        let mut sc = Scene::new();
+        sc.rect(surf.screen(), Color::White);
+        match step {
+            0 => draw_two_button_message(surf, &mut sc, title, text, step, n_steps),
+            1 => draw_two_button_choice(surf, &mut sc, confirm, Icon::Confirm, step, n_steps),
+            _ => draw_two_button_choice(surf, &mut sc, reject, Icon::Reject, step, n_steps),
         }
+        surf.paint(&sc);
 
         loop {
-            match get_event().await {
-                Event::Action(action) => {
-                    if action == Action::NextPage && cur_step < n_steps - 1 {
-                        cur_step += 1;
-                        break;
-                    } else if action == Action::PreviousPage && cur_step > 0 {
-                        cur_step -= 1;
-                        break;
-                    } else if action == Action::Confirm {
-                        if cur_step == n_pair_steps + 1 {
-                            return true; // Confirm
-                        } else if cur_step == n_pair_steps + 2 {
-                            return false; // Reject
-                        }
-                    }
+            let event = get_event().await;
+            match nav_from_event(&event) {
+                Some(Nav::Prev) if step > 0 => {
+                    step -= 1;
+                    break;
                 }
+                Some(Nav::Next) if step + 1 < n_steps => {
+                    step += 1;
+                    break;
+                }
+                Some(Nav::Select) => match step {
+                    1 => return true,
+                    2 => return false,
+                    _ => {}
+                },
                 _ => {}
             }
         }
     }
 }
 
-// Temporary function; similar to nbgl_useCaseReview
+// -----------------------------------------------------------------------------
+// review_pairs
+// -----------------------------------------------------------------------------
+
+/// Reviews a list of tag/value pairs and asks for a final confirmation. Returns `true` if
+/// confirmed, `false` if rejected.
 pub async fn review_pairs(
     intro_text: &str,
     intro_subtext: &str,
@@ -359,8 +341,10 @@ pub async fn review_pairs(
     final_button_text: &str,
     long_press: bool,
 ) -> bool {
-    if has_page_api() {
-        __page_review_pairs(
+    let mut surf = Surface::new();
+    if surf.caps().input == InputModel::Pointer {
+        review_pairs_pointer(
+            &mut surf,
             intro_text,
             intro_subtext,
             pairs,
@@ -370,105 +354,278 @@ pub async fn review_pairs(
         )
         .await
     } else {
-        __step_review_pairs(
-            intro_text,
-            intro_subtext,
-            pairs,
-            final_text,
-            final_button_text,
-            long_press,
-        )
-        .await
+        review_pairs_two_button(&mut surf, intro_text, intro_subtext, pairs, final_button_text).await
     }
 }
 
-pub fn show_spinner(text: &str) {
-    if has_page_api() {
-        ux_generated::show_page_spinner(text);
-    } else {
-        ux_generated::show_step_spinner(text);
+// Greedily packs pairs into pages by measured, wrapped height. At least one pair per page.
+fn paginate_pairs(
+    surf: &Surface,
+    content_w: i32,
+    content_h: i32,
+    pairs: &[TagValue],
+) -> Vec<Range<usize>> {
+    let pad = 12;
+    let pair_h = |p: &TagValue| {
+        block_height(surf, content_w, &p.tag, Font::Bold)
+            + block_height(surf, content_w, &p.value, Font::Regular)
+            + pad
+    };
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < pairs.len() {
+        let mut end = start + 1;
+        let mut h = pair_h(&pairs[start]);
+        while end < pairs.len() {
+            let nh = pair_h(&pairs[end]);
+            if h + nh > content_h {
+                break;
+            }
+            h += nh;
+            end += 1;
+        }
+        ranges.push(start..end);
+        start = end;
     }
-}
-
-pub async fn show_info(icon: Icon, text: &str) {
-    if has_page_api() {
-        ux_generated::show_page_info(icon, text);
-    } else {
-        ux_generated::show_step_info_single(text);
+    if ranges.is_empty() {
+        ranges.push(0..0);
     }
-
-    wait(20).await; // Wait for 20 ticker events (about 2 seconds)
+    ranges
 }
 
-// computes the correct constant among SINGLE_STEP, FIRST_STEP, LAST_STEP, NEITHER_FIRST_NOR_LAST_STEP
-pub(crate) const fn step_pos(n_steps: u32, cur_step: u32) -> u8 {
-    let has_left_arrow = (cur_step > 0) as u8;
-    let has_right_arrow = (cur_step + 1 < n_steps) as u8;
+#[allow(clippy::too_many_arguments)]
+async fn review_pairs_pointer(
+    surf: &mut Surface,
+    intro_text: &str,
+    intro_subtext: &str,
+    pairs: &[TagValue],
+    final_text: &str,
+    final_button_text: &str,
+    _long_press: bool,
+) -> bool {
+    let screen = surf.screen();
+    let bg = Color::White;
+    let content_w = screen.w - 2 * MARGIN;
 
-    has_left_arrow << 1 | has_right_arrow
-}
+    let top_h = BTN_H + 8; // top bar: a Cancel button + page indicator
+    let bottom_h = BTN_H + 16; // bottom bar: prev / next / confirm
+    let content = Rect::new(
+        MARGIN,
+        top_h,
+        content_w,
+        screen.h - top_h - bottom_h - MARGIN,
+    );
 
-pub async fn show_confirm_reject(title: &str, text: &str, confirm: &str, reject: &str) -> bool {
-    if has_page_api() {
-        ux_generated::show_page_confirm_reject(title, text, confirm, reject);
+    let ranges = paginate_pairs(surf, content.w, content.h, pairs);
+    let n_pages = 2 + ranges.len(); // intro + pair pages + final
+    let last = n_pages - 1;
 
-        // wait until a button is pressed
+    // Fixed chrome rectangles, hit-tested on touch release.
+    let cancel_btn = Rect::new(MARGIN, 4, 120, BTN_H);
+    let by = screen.h - BTN_H - 8;
+    let nav_w = 130;
+    let prev_btn = Rect::new(MARGIN, by, nav_w, BTN_H);
+    let next_btn = Rect::new(screen.w - MARGIN - nav_w, by, nav_w, BTN_H);
+    let confirm_btn = Rect::new(MARGIN, by, content_w, BTN_H);
+
+    let mut page = 0usize;
+    loop {
+        let mut sc = Scene::new();
+        sc.rect(screen, bg);
+
+        // Top bar: Cancel + "page / total".
+        button(&mut sc, cancel_btn, "Cancel", Font::Regular);
+        sc.text(
+            Rect::new(screen.w - MARGIN - 120, 4, 120, BTN_H),
+            format!("{} / {}", page + 1, n_pages),
+            Font::Regular,
+            Color::Black,
+            bg,
+            Align::Right,
+        );
+
+        // Content.
+        if page == 0 {
+            let mut y = content.y;
+            y = text_block(surf, &mut sc, content.x, y, content.w, intro_text, Font::Large, Align::Center);
+            y += 8;
+            text_block(surf, &mut sc, content.x, y, content.w, intro_subtext, Font::Regular, Align::Center);
+        } else if page == last {
+            text_block(surf, &mut sc, content.x, content.y, content.w, final_text, Font::Large, Align::Center);
+        } else {
+            let range = ranges[page - 1].clone();
+            let mut y = content.y;
+            for p in &pairs[range] {
+                y = text_block(surf, &mut sc, content.x, y, content.w, &p.tag, Font::Bold, Align::Left);
+                y = text_block(surf, &mut sc, content.x, y, content.w, &p.value, Font::Regular, Align::Left);
+                y += 12;
+            }
+        }
+
+        // Bottom bar: confirm on the last page, otherwise prev/next.
+        if page == last {
+            button(&mut sc, confirm_btn, final_button_text, Font::Bold);
+        } else {
+            if page > 0 {
+                button(&mut sc, prev_btn, "Back", Font::Bold);
+            }
+            button(&mut sc, next_btn, "Next", Font::Bold);
+        }
+        surf.paint(&sc);
+
         loop {
-            match get_event().await {
-                Event::Action(action) => {
-                    if action == Action::Reject {
-                        return false;
-                    } else if action == Action::Confirm {
+            let event = get_event().await;
+            let Some(p) = touch_release(&event) else {
+                continue;
+            };
+            if cancel_btn.contains(p) {
+                return false;
+            }
+            if page == last {
+                if confirm_btn.contains(p) {
+                    return true;
+                }
+            } else if next_btn.contains(p) {
+                page += 1;
+                break;
+            } else if page > 0 && prev_btn.contains(p) {
+                page -= 1;
+                break;
+            }
+        }
+    }
+}
+
+async fn review_pairs_two_button(
+    surf: &mut Surface,
+    intro_text: &str,
+    intro_subtext: &str,
+    pairs: &[TagValue],
+    final_button_text: &str,
+) -> bool {
+    // Steps: intro, one per pair, a confirm step, a reject step.
+    let n_pair_steps = pairs.len();
+    let n_steps = n_pair_steps + 3;
+    let confirm_step = n_pair_steps + 1;
+    let reject_step = n_pair_steps + 2;
+
+    let mut step = 0usize;
+    loop {
+        let mut sc = Scene::new();
+        sc.rect(surf.screen(), Color::White);
+        if step == 0 {
+            draw_two_button_message(surf, &mut sc, intro_text, intro_subtext, step, n_steps);
+        } else if step <= n_pair_steps {
+            let p = &pairs[step - 1];
+            draw_two_button_message(surf, &mut sc, &p.tag, &p.value, step, n_steps);
+        } else if step == confirm_step {
+            draw_two_button_choice(surf, &mut sc, final_button_text, Icon::Confirm, step, n_steps);
+        } else {
+            draw_two_button_choice(surf, &mut sc, "Reject", Icon::Reject, step, n_steps);
+        }
+        surf.paint(&sc);
+
+        loop {
+            let event = get_event().await;
+            match nav_from_event(&event) {
+                Some(Nav::Prev) if step > 0 => {
+                    step -= 1;
+                    break;
+                }
+                Some(Nav::Next) if step + 1 < n_steps => {
+                    step += 1;
+                    break;
+                }
+                Some(Nav::Select) => {
+                    if step == confirm_step {
                         return true;
+                    } else if step == reject_step {
+                        return false;
                     }
                 }
                 _ => {}
             }
         }
-    } else {
-        let n_steps = 3;
-        let mut cur_step = 0;
-
-        loop {
-            match cur_step {
-                0 => {
-                    ux_generated::show_step_text_subtext(step_pos(n_steps, cur_step), title, text);
-                }
-                1 => ux_generated::show_step_confirm(step_pos(n_steps, cur_step)),
-                2 => ux_generated::show_step_reject(step_pos(n_steps, cur_step)),
-                _ => {
-                    panic!("Invalid step");
-                }
-            }
-
-            loop {
-                match get_event().await {
-                    Event::Action(action) => {
-                        if action == Action::NextPage && cur_step < n_steps - 1 {
-                            cur_step += 1;
-                            break;
-                        } else if action == Action::PreviousPage && cur_step > 0 {
-                            cur_step -= 1;
-                            break;
-                        } else if action == Action::Confirm {
-                            if cur_step == 1 {
-                                return true; // Confirm
-                            } else if cur_step == 2 {
-                                return false; // Reject
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
     }
 }
 
-pub fn ux_idle() {
-    if has_page_api() {
-        show_page_raw(&ux_generated::RAW_PAGE_APP_DASHBOARD);
-    } else {
-        show_step_raw(&ux_generated::RAW_STEP_APP_DASHBOARD);
+// -----------------------------------------------------------------------------
+// Two-button (Nano) screen drawing
+// -----------------------------------------------------------------------------
+
+// Draws left/right arrow hints in the top corners for steps that have a previous / next.
+fn draw_nav_arrows(surf: &Surface, sc: &mut Scene, step: usize, n_steps: usize) {
+    let w = surf.screen().w;
+    let lh = line_h(surf, Font::Regular);
+    if step > 0 {
+        sc.text(Rect::new(0, 0, 12, lh), "<", Font::Bold, Color::Black, Color::White, Align::Center);
     }
+    if step + 1 < n_steps {
+        sc.text(Rect::new(w - 12, 0, 12, lh), ">", Font::Bold, Color::Black, Color::White, Align::Center);
+    }
+}
+
+// A title + body text screen for the Nano, vertically stacked from the top.
+fn draw_two_button_message(
+    surf: &Surface,
+    sc: &mut Scene,
+    title: &str,
+    body: &str,
+    step: usize,
+    n_steps: usize,
+) {
+    draw_nav_arrows(surf, sc, step, n_steps);
+    let w = surf.screen().w;
+    let mut y = 2;
+    y = text_block(surf, sc, 0, y, w, title, Font::Bold, Align::Center);
+    y += 2;
+    text_block(surf, sc, 0, y, w, body, Font::Regular, Align::Center);
+}
+
+// A centered choice screen for the Nano ("Confirm" / "Reject"); both-button press selects it.
+fn draw_two_button_choice(
+    surf: &Surface,
+    sc: &mut Scene,
+    label: &str,
+    _icon: Icon,
+    step: usize,
+    n_steps: usize,
+) {
+    draw_nav_arrows(surf, sc, step, n_steps);
+    let w = surf.screen().w;
+    let h = surf.screen().h;
+    let lh = line_h(surf, Font::Bold);
+    let y = ((h - lh) / 2).max(2);
+    sc.text(Rect::new(0, y, w, lh), label, Font::Bold, Color::Black, Color::White, Align::Center);
+}
+
+// -----------------------------------------------------------------------------
+// ux_idle
+// -----------------------------------------------------------------------------
+
+/// Draws the default idle ("ready") screen with the low-level primitives.
+///
+/// Unlike the old NBGL dashboard this neither registers an NBGL screen nor handles a Quit
+/// gesture itself — it just paints and returns. With no NBGL screen active, raw input
+/// events flow straight to the app, which is what lets the flows above work on Nano.
+pub fn ux_idle() {
+    let mut surf = Surface::new();
+    let screen = surf.screen();
+    let bg = Color::White;
+    let content_w = screen.w - 2 * MARGIN;
+    let lh = line_h(&surf, Font::Large);
+    let y = ((screen.h - lh) / 2).max(MARGIN);
+
+    let mut sc = Scene::new();
+    sc.rect(screen, bg);
+    let _ = content_w;
+    sc.text(
+        Rect::new(MARGIN, y, content_w, lh),
+        "Application is ready",
+        Font::Large,
+        Color::Black,
+        bg,
+        Align::Center,
+    );
+    surf.paint(&sc);
 }

@@ -5,6 +5,8 @@
 //! [`EinkPolicy`] refreshes only the damaged rectangle and forces an occasional full
 //! refresh to clear accumulated ghosting; a fast LCD would use [`ImmediatePolicy`].
 
+use common::ecall_constants::PixelFormat;
+
 use super::{Capabilities, ContentHint, Rect};
 use crate::ux::screen::{RefreshMode, Screen};
 
@@ -44,6 +46,10 @@ fn align4_clip(dirty: Rect, sw: i32, sh: i32) -> Option<(u16, u16, u16, u16)> {
 pub struct EinkPolicy {
     width: i32,
     height: i32,
+    /// The panel's native pixel format. Monochrome (Mono1, the Nano panels) refreshes in
+    /// black-&-white; `FullColor` is meaningless there and only the grayscale Stax/Flex
+    /// panels actually have a full-color refresh.
+    format: PixelFormat,
     fast_text: bool,
     partials_since_full: u32,
     max_partials: u32,
@@ -54,9 +60,18 @@ impl EinkPolicy {
         Self {
             width: caps.size.w as i32,
             height: caps.size.h as i32,
+            format: caps.pixel_format,
             fast_text: false,
             partials_since_full: 0,
             max_partials: 32,
+        }
+    }
+
+    // The full-screen / full-color refresh mode appropriate for this panel.
+    fn full_mode(&self) -> RefreshMode {
+        match self.format {
+            PixelFormat::Mono1 => RefreshMode::BlackWhite,
+            PixelFormat::Gray4 => RefreshMode::FullColor,
         }
     }
 
@@ -68,13 +83,7 @@ impl EinkPolicy {
     }
 
     fn full_refresh(&mut self, screen: &Screen) {
-        screen.refresh_area(
-            0,
-            0,
-            self.width as u16,
-            self.height as u16,
-            RefreshMode::FullColor,
-        );
+        screen.refresh_area(0, 0, self.width as u16, self.height as u16, self.full_mode());
         self.partials_since_full = 0;
     }
 }
@@ -95,7 +104,10 @@ impl RefreshPolicy for EinkPolicy {
         let Some((x, y, w, h)) = align4_clip(dirty, self.width, self.height) else {
             return;
         };
-        let mode = if self.fast_text && hint == ContentHint::Text {
+        let mode = if self.format == PixelFormat::Mono1 {
+            // Monochrome panels have only a black-&-white refresh.
+            RefreshMode::BlackWhite
+        } else if self.fast_text && hint == ContentHint::Text {
             RefreshMode::BlackWhiteFast
         } else {
             RefreshMode::FullColor

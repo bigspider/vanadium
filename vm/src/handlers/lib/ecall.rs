@@ -1932,16 +1932,18 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
 
 // Processes all events until a ticker is received, then returns.
 //
-// Touch (touch-screen devices) and button (Nano) events seen along the way are stashed
-// via `store_new_event` so the guest's next `get_event` returns them — the same deferred
-// mechanism the NBGL page/step callbacks use for semantic `Action`s. When an NBGL screen
-// is active, its touch callback runs first (during `try_next_event`) and stores an
-// `Action`; `store_new_event` keeps that and drops the raw Touch, so NBGL pages are
-// unaffected. Custom GUIs (no NBGL object) get the raw Touch/Button instead.
+// Touch (touch-screen devices) and button (Nano) events seen along the way are stashed via
+// `store_new_event` so the guest's next `get_event` returns them. The running V-App draws
+// its own UI with the low-level primitives and keeps no NBGL screen active, so we put the
+// SDK in raw-input mode for the duration of this pump: `try_next_event` then decodes the
+// touch/button without dispatching it into NBGL (dispatching to a non-existent screen would
+// crash). Raw mode is disabled again on return, so the VM's own NBGL screens (e.g. the V-App
+// registration prompt), which use a different event loop, keep their normal NBGL dispatch.
 fn wait_for_ticker<const N: usize>(comm: &mut RefMut<'_, &mut ledger_device_sdk::io::Comm<N>>) {
+    ledger_device_sdk::io::set_raw_input_events(true);
     loop {
         match comm.try_next_event().into_type() {
-            DecodedEventType::Ticker => return,
+            DecodedEventType::Ticker => break,
             #[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
             DecodedEventType::Touch { x, y, state } => store_touch_event(x, y, state),
             #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
@@ -1949,6 +1951,7 @@ fn wait_for_ticker<const N: usize>(comm: &mut RefMut<'_, &mut ledger_device_sdk:
             _ => {}
         }
     }
+    ledger_device_sdk::io::set_raw_input_events(false);
 }
 
 #[cfg(feature = "trace_ecalls")]

@@ -39,11 +39,6 @@ mod ecalls_riscv;
 #[cfg(feature = "target_native")]
 mod ecalls_native;
 
-#[allow(unused_assignments)]
-mod ux_generated {
-    include!(concat!(env!("OUT_DIR"), "/ux_generated.rs"));
-}
-
 #[cfg(feature = "target_vanadium_ledger")]
 use embedded_alloc::Heap;
 
