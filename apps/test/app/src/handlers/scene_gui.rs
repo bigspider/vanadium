@@ -307,13 +307,15 @@ pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
                 // On the two-button Nano devices the raw button events now reach us directly:
                 // `ux_idle()` draws with the low-level primitives and leaves no NBGL screen
                 // active, so the VM no longer intercepts the buttons into semantic `Action`s.
-                // Left/right adjust the counter, both-press finishes.
+                // We act on *release* (the Ledger convention) so a both-buttons press — whose
+                // two contacts are never simultaneous — resolves to a single `BothRelease`
+                // instead of letting whichever button landed first win.
                 Event::Button(btn) if !pointer => {
                     idle = 0;
                     match btn {
-                        ButtonEvent::LeftPress => state.counter -= 1,
-                        ButtonEvent::RightPress => state.counter += 1,
-                        ButtonEvent::BothPress => state.done = true,
+                        ButtonEvent::LeftRelease => state.counter -= 1,
+                        ButtonEvent::RightRelease => state.counter += 1,
+                        ButtonEvent::BothRelease => state.done = true,
                         _ => {}
                     }
                     true

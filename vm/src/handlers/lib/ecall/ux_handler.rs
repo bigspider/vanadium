@@ -68,29 +68,96 @@ fn font_id(font: common::ecall_constants::Font) -> sys::nbgl_font_id_e {
     id as sys::nbgl_font_id_e
 }
 
+type QueuedEvent = (common::ux::EventCode, common::ux::EventData);
+
+// A small FIFO of pending UX events awaiting the guest's `get_event`.
+//
+// We keep a queue, not a single slot, so discrete inputs are never lost: every button
+// press AND release is delivered to the guest, in order. That lets a guest act *instantly*
+// on a press (e.g. a game that must turn the moment a button goes down) while the built-in
+// flows choose to act on releases. Consecutive *touch* events are still coalesced into the
+// latest (a drag streams a flood of move events and only the current finger position
+// matters); buttons and other events are queued individually.
+//
+// The queue only needs to hold the events of a single inter-ticker window: `handle_get_event`
+// returns a queued event immediately and pumps new seph events only when the queue is empty,
+// so it cannot grow across `get_event` calls. Within one window the realistic worst case is a
+// "both buttons" press+release (`LeftPress, BothPress, BothRelease` = 3 events); on touch
+// devices the events coalesce to ~1. Four slots cover that with a margin; on the rare overflow
+// the oldest event is dropped (harmless for the release-driven flows).
+const EVENT_QUEUE_CAP: usize = 4;
+
+struct EventQueue {
+    buf: [Option<QueuedEvent>; EVENT_QUEUE_CAP],
+    head: usize,
+    len: usize,
+}
+
+impl EventQueue {
+    const fn new() -> Self {
+        Self {
+            buf: [None; EVENT_QUEUE_CAP],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn tail_kind(&self) -> Option<common::ux::EventCode> {
+        if self.len == 0 {
+            return None;
+        }
+        let i = (self.head + self.len - 1) % EVENT_QUEUE_CAP;
+        self.buf[i].as_ref().map(|(code, _)| *code)
+    }
+
+    fn push(&mut self, ev: QueuedEvent) {
+        if self.len == EVENT_QUEUE_CAP {
+            // Full (should not happen in practice — the guest drains far faster than a human
+            // generates input): drop the oldest to favor the most recent input.
+            self.head = (self.head + 1) % EVENT_QUEUE_CAP;
+            self.len -= 1;
+        }
+        let i = (self.head + self.len) % EVENT_QUEUE_CAP;
+        self.buf[i] = Some(ev);
+        self.len += 1;
+    }
+
+    // Overwrites the most recent queued event (used to coalesce consecutive touches).
+    fn overwrite_tail(&mut self, ev: QueuedEvent) {
+        let i = (self.head + self.len - 1) % EVENT_QUEUE_CAP;
+        self.buf[i] = Some(ev);
+    }
+
+    fn pop(&mut self) -> Option<QueuedEvent> {
+        if self.len == 0 {
+            return None;
+        }
+        let ev = self.buf[self.head].take();
+        self.head = (self.head + 1) % EVENT_QUEUE_CAP;
+        self.len -= 1;
+        ev
+    }
+}
+
 // We use MaybeUninit to make sure that the static variable does not create
 // a .data section, which is not allowed.
-static mut LAST_EVENT: MaybeUninit<Option<(common::ux::EventCode, common::ux::EventData)>> =
-    MaybeUninit::uninit();
-static mut LAST_EVENT_INITIALIZED: bool = false;
+static mut EVENT_QUEUE: MaybeUninit<EventQueue> = MaybeUninit::uninit();
+static mut EVENT_QUEUE_INITIALIZED: bool = false;
 
-fn init_last_event() {
+fn event_queue() -> &'static mut EventQueue {
     #[allow(static_mut_refs)]
     unsafe {
-        if !LAST_EVENT_INITIALIZED {
-            LAST_EVENT.write(None);
-            LAST_EVENT_INITIALIZED = true;
+        if !EVENT_QUEUE_INITIALIZED {
+            EVENT_QUEUE.write(EventQueue::new());
+            EVENT_QUEUE_INITIALIZED = true;
         }
+        EVENT_QUEUE.assume_init_mut()
     }
 }
 
 pub fn get_last_event() -> Option<(common::ux::EventCode, common::ux::EventData)> {
-    init_last_event();
-    // Safe in a single-threaded environment
-    #[allow(static_mut_refs)]
-    unsafe {
-        LAST_EVENT.assume_init_mut().take()
-    }
+    // Safe in a single-threaded environment.
+    event_queue().pop()
 }
 
 /// Builds a [`Touch`](common::ux::EventCode::Touch) event from a decoded seph finger
@@ -129,31 +196,18 @@ pub fn store_button_event(btn: ledger_device_sdk::buttons::ButtonEvent) {
 }
 
 fn store_new_event(event_code: common::ux::EventCode, event_data: common::ux::EventData) {
-    init_last_event();
-    // We store the new event if there is no buffered event or only a ticker. Additionally,
-    // we coalesce consecutive touch events: a newer touch overwrites a still-unconsumed one
-    // so the latest finger state — in particular a release ending a drag — is never dropped
-    // behind a stale press while the guest is busy (e.g. mid-redraw). Without this, a lost
-    // release leaves a custom GUI thinking the finger is still down. Other event kinds
-    // (notably NBGL `Action`s) are still preserved, so page UX is unaffected.
-    #[allow(static_mut_refs)]
-    unsafe {
-        if !LAST_EVENT_INITIALIZED {
-            LAST_EVENT.write(None);
-            LAST_EVENT_INITIALIZED = true;
-        }
-        let last_event = LAST_EVENT.assume_init_mut();
-        let replace = match last_event.as_ref() {
-            None => true,
-            Some((code, _)) => {
-                *code == common::ux::EventCode::Ticker
-                    || (*code == common::ux::EventCode::Touch
-                        && event_code == common::ux::EventCode::Touch)
-            }
-        };
-        if replace {
-            *last_event = Some((event_code, event_data));
-        }
+    let q = event_queue();
+    // Coalesce a run of touch events into the latest (a drag streams move events and only the
+    // current finger position matters — and this stops a drag from flooding the queue). Every
+    // other event, in particular each discrete button press and release, is queued in order so
+    // none is ever lost or reordered: the guest sees presses immediately (for instant response)
+    // and a "both buttons" gesture still arrives as its final `BothRelease`.
+    if event_code == common::ux::EventCode::Touch
+        && q.tail_kind() == Some(common::ux::EventCode::Touch)
+    {
+        q.overwrite_tail((event_code, event_data));
+    } else {
+        q.push((event_code, event_data));
     }
 }
 

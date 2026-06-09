@@ -148,13 +148,19 @@ pub enum Nav {
     Select,
 }
 
-/// Maps a raw Nano [`ButtonEvent`] to a [`Nav`] on press: left → previous, right → next,
-/// both → select/confirm. Releases (and anything else) yield `None`.
+/// Maps a raw Nano [`ButtonEvent`] to a [`Nav`] on **release**: left → previous, right →
+/// next, both → select/confirm. Presses (and anything else) yield `None`.
+///
+/// Acting on release — the Ledger convention — is what makes a "both buttons" gesture work:
+/// the two contacts are never perfectly simultaneous, so on press the first button down would
+/// fire on its own ("first one wins"). The button state machine instead accumulates the
+/// pressed mask until full release and emits a single `BothRelease`, so waiting for the
+/// release yields the correct intent regardless of press timing.
 pub fn nav_from_button(b: ButtonEvent) -> Option<Nav> {
     match b {
-        ButtonEvent::LeftPress => Some(Nav::Prev),
-        ButtonEvent::RightPress => Some(Nav::Next),
-        ButtonEvent::BothPress => Some(Nav::Select),
+        ButtonEvent::LeftRelease => Some(Nav::Prev),
+        ButtonEvent::RightRelease => Some(Nav::Next),
+        ButtonEvent::BothRelease => Some(Nav::Select),
         _ => None,
     }
 }
