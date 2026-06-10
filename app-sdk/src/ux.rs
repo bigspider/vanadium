@@ -175,10 +175,21 @@ pub(crate) fn paint_info(icon: Icon, text: &str) {
     let screen = surf.screen();
     let bg = Color::White;
 
+    // The narrow Nano panel can't fit the large icon + Large font, so the two-button devices
+    // use the smaller 20×20 icon (selected by pixel format in `icons::bitmap`), a tighter
+    // icon/text gap, and the Regular font, so everything fits on the 64px-high screen.
+    let (gap, font) = if surf.caps().input == InputModel::TwoButton {
+        (4, Font::Regular)
+    } else {
+        (16, Font::Large)
+    };
+
     let content_w = screen.w - 2 * MARGIN;
-    let bitmap = icons::gray4(icon); // None on monochrome / no-art icons
-    let icon_h = bitmap.as_ref().map(|b| b.h + 16).unwrap_or(0);
-    let text_h = block_height(&surf, content_w, text, Font::Large);
+    // Pick the icon art matching the panel's native pixel format; a Gray4 blit on the 1bpp
+    // Nano panel renders as gibberish on real hardware. `None` for icons we have no art for.
+    let bitmap = icons::bitmap(icon, surf.caps().pixel_format);
+    let icon_h = bitmap.as_ref().map(|b| b.h + gap).unwrap_or(0);
+    let text_h = block_height(&surf, content_w, text, font);
     let total = icon_h + text_h;
     let mut y = (screen.h - total) / 2;
     if y < MARGIN {
@@ -189,9 +200,9 @@ pub(crate) fn paint_info(icon: Icon, text: &str) {
     sc.rect(screen, bg);
     if let Some(b) = &bitmap {
         let r = draw_icon_centered(&mut sc, screen, b, y);
-        y = r.bottom() + 16;
+        y = r.bottom() + gap;
     }
-    text_block(&surf, &mut sc, MARGIN, y, content_w, text, Font::Large, Align::Center);
+    text_block(&surf, &mut sc, MARGIN, y, content_w, text, font, Align::Center);
     surf.paint(&sc);
 }
 

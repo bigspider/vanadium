@@ -1,10 +1,13 @@
 //! A tiny set of status icons, blitted on the accelerated path (`display_blit`).
 //!
 //! NBGL used to supply these for free via the page/step UX; once the SDK drives the screen
-//! purely with the low-level primitives we have to carry our own. They are stored as
-//! [`Gray4`](PixelFormat::Gray4) bitmaps (high nibble = left pixel, 2 px/byte) and shown
-//! only on the grayscale touch panels — `show_info` on the monochrome Nano stays text-only,
-//! as it always has. Each is 40×40, so the blit `y`/`height` multiple-of-4 constraint
+//! purely with the low-level primitives we have to carry our own. The art is authored as
+//! [`Gray4`](PixelFormat::Gray4) bitmaps (high nibble = left pixel, 2 px/byte); a
+//! [`Mono1`](PixelFormat::Mono1) version is derived from it at compile time (see
+//! [`gray4_to_mono1`]) for the 1bpp Nano panels. [`bitmap`] then hands out the variant that
+//! matches the device's native pixel format — blitting a `Gray4` image to the 1bpp Nano
+//! panel renders as gibberish on real hardware (Speculos's emulated NBGL happens to tolerate
+//! it, masking the bug). Each is 40×40, so the blit `y`/`height` multiple-of-4 constraint
 //! (enforced by the `display_blit` ECALL) is satisfied for any 4-aligned `y`.
 //!
 //! Generated from a rasterized check / cross (see the generator in the PR description).
@@ -112,18 +115,68 @@ pub const ICON_CROSS_GRAY4: [u8; 800] = [
     0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
 ];
 
-/// The Gray4 bitmap for a semantic [`Icon`], or `None` if we have no art for it (or on a
-/// monochrome device, where status screens stay text-only).
-pub fn gray4(icon: Icon) -> Option<IconBitmap> {
-    let pixels: &'static [u8] = match icon {
-        Icon::Success | Icon::Confirm => &ICON_CHECK_GRAY4,
-        Icon::Failure | Icon::Reject => &ICON_CROSS_GRAY4,
-        Icon::None | Icon::Processing => return None,
+/// Size of the [`Mono1`](PixelFormat::Mono1) icons. The 40×40 art is too tall to leave room
+/// for a text line on the 64px-high Nano panel, so the Nano variant is downscaled 2:1 to
+/// 20×20 — still a multiple of 4, as the blit `y`/`height` constraint requires.
+pub const MONO_W: i32 = ICON_W / 2;
+pub const MONO_H: i32 = ICON_H / 2;
+
+/// Number of bytes in a downscaled [`Mono1`](PixelFormat::Mono1) icon (1bpp, 3-byte rows × 20).
+const MONO1_LEN: usize = PixelFormat::Mono1.buffer_len(MONO_W as usize, MONO_H as usize);
+
+/// Derives the 1bpp [`Mono1`](PixelFormat::Mono1) packing of a 40×40 [`Gray4`] icon at
+/// compile time, downscaling 2:1 by averaging each 2×2 source block and thresholding the
+/// result at the mid grayscale level. A bit is *set* for light pixels (average ≥ 8) —
+/// matching the VM's Mono1 convention where a set bit takes the foreground (white) and a
+/// clear bit the background (black), so the white field stays white and the dark
+/// check/cross strokes stay black.
+const fn gray4_to_mono1(src: &[u8; 800]) -> [u8; MONO1_LEN] {
+    let in_stride = PixelFormat::Gray4.stride(ICON_W as usize);
+    let out_stride = PixelFormat::Mono1.stride(MONO_W as usize);
+    let mut out = [0u8; MONO1_LEN];
+    let mut oy = 0;
+    while oy < MONO_H as usize {
+        let mut ox = 0;
+        while ox < MONO_W as usize {
+            // Average the 2×2 Gray4 block that maps to this output pixel.
+            let mut sum = 0u32;
+            let mut dy = 0;
+            while dy < 2 {
+                let mut dx = 0;
+                while dx < 2 {
+                    let col = ox * 2 + dx;
+                    let row = oy * 2 + dy;
+                    let byte = src[row * in_stride + col / 2];
+                    let nibble = if col % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+                    sum += nibble as u32;
+                    dx += 1;
+                }
+                dy += 1;
+            }
+            if sum / 4 >= 8 {
+                out[oy * out_stride + ox / 8] |= 1 << (7 - (ox % 8));
+            }
+            ox += 1;
+        }
+        oy += 1;
+    }
+    out
+}
+
+pub const ICON_CHECK_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CHECK_GRAY4);
+pub const ICON_CROSS_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CROSS_GRAY4);
+
+/// The status bitmap for a semantic [`Icon`], in the device's native `format`, or `None` if
+/// we have no art for it. Callers should pass `caps().pixel_format` so the blit matches the
+/// panel's bit depth (a `Gray4` blit on the 1bpp Nano panel renders as gibberish); the Nano
+/// `Mono1` variant is also the smaller 20×20 art so it leaves room for a text line.
+pub fn bitmap(icon: Icon, format: PixelFormat) -> Option<IconBitmap> {
+    let (pixels, w, h): (&'static [u8], i32, i32) = match (icon, format) {
+        (Icon::Success | Icon::Confirm, PixelFormat::Gray4) => (&ICON_CHECK_GRAY4, ICON_W, ICON_H),
+        (Icon::Success | Icon::Confirm, PixelFormat::Mono1) => (&ICON_CHECK_MONO1, MONO_W, MONO_H),
+        (Icon::Failure | Icon::Reject, PixelFormat::Gray4) => (&ICON_CROSS_GRAY4, ICON_W, ICON_H),
+        (Icon::Failure | Icon::Reject, PixelFormat::Mono1) => (&ICON_CROSS_MONO1, MONO_W, MONO_H),
+        (Icon::None | Icon::Processing, _) => return None,
     };
-    Some(IconBitmap {
-        pixels,
-        w: ICON_W,
-        h: ICON_H,
-        format: PixelFormat::Gray4,
-    })
+    Some(IconBitmap { pixels, w, h, format })
 }
