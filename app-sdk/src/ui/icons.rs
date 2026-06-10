@@ -115,6 +115,28 @@ pub const ICON_CROSS_GRAY4: [u8; 800] = [
     0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
 ];
 
+/// Photometric negative of a `Gray4` bitmap (each 4-bit level `v` becomes `15 - v`). The art
+/// above is authored dark-on-white; the default UI theme is white-on-black ([`FG`] on [`BG`]),
+/// so the blitted icons are the inverted versions — white check/cross strokes on a black
+/// field that blends into the black background.
+///
+/// [`FG`]: crate::ui::FG
+/// [`BG`]: crate::ui::BG
+const fn invert_gray4(src: &[u8; 800]) -> [u8; 800] {
+    let mut out = [0u8; 800];
+    let mut i = 0;
+    while i < src.len() {
+        out[i] = !src[i]; // `!` flips all bits, i.e. 15 - v for each of the two nibbles
+        i += 1;
+    }
+    out
+}
+
+/// The themed (white-on-black) art actually blitted to the screen, derived from the authored
+/// dark-on-white source above.
+pub const ICON_CHECK_GRAY4_THEMED: [u8; 800] = invert_gray4(&ICON_CHECK_GRAY4);
+pub const ICON_CROSS_GRAY4_THEMED: [u8; 800] = invert_gray4(&ICON_CROSS_GRAY4);
+
 /// Size of the [`Mono1`](PixelFormat::Mono1) icons. The 40×40 art is too tall to leave room
 /// for a text line on the 64px-high Nano panel, so the Nano variant is downscaled 2:1 to
 /// 20×20 — still a multiple of 4, as the blit `y`/`height` constraint requires.
@@ -128,8 +150,8 @@ const MONO1_LEN: usize = PixelFormat::Mono1.buffer_len(MONO_W as usize, MONO_H a
 /// compile time, downscaling 2:1 by averaging each 2×2 source block and thresholding the
 /// result at the mid grayscale level. A bit is *set* for light pixels (average ≥ 8) —
 /// matching the VM's Mono1 convention where a set bit takes the foreground (white) and a
-/// clear bit the background (black), so the white field stays white and the dark
-/// check/cross strokes stay black.
+/// clear bit the background (black). Fed the themed (white-on-black) art, the white strokes
+/// become set bits (drawn white) and the black field clear bits (drawn black).
 const fn gray4_to_mono1(src: &[u8; 800]) -> [u8; MONO1_LEN] {
     let in_stride = PixelFormat::Gray4.stride(ICON_W as usize);
     let out_stride = PixelFormat::Mono1.stride(MONO_W as usize);
@@ -163,8 +185,8 @@ const fn gray4_to_mono1(src: &[u8; 800]) -> [u8; MONO1_LEN] {
     out
 }
 
-pub const ICON_CHECK_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CHECK_GRAY4);
-pub const ICON_CROSS_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CROSS_GRAY4);
+pub const ICON_CHECK_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CHECK_GRAY4_THEMED);
+pub const ICON_CROSS_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CROSS_GRAY4_THEMED);
 
 /// The status bitmap for a semantic [`Icon`], in the device's native `format`, or `None` if
 /// we have no art for it. Callers should pass `caps().pixel_format` so the blit matches the
@@ -172,9 +194,9 @@ pub const ICON_CROSS_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CROSS_GRAY4);
 /// `Mono1` variant is also the smaller 20×20 art so it leaves room for a text line.
 pub fn bitmap(icon: Icon, format: PixelFormat) -> Option<IconBitmap> {
     let (pixels, w, h): (&'static [u8], i32, i32) = match (icon, format) {
-        (Icon::Success | Icon::Confirm, PixelFormat::Gray4) => (&ICON_CHECK_GRAY4, ICON_W, ICON_H),
+        (Icon::Success | Icon::Confirm, PixelFormat::Gray4) => (&ICON_CHECK_GRAY4_THEMED, ICON_W, ICON_H),
         (Icon::Success | Icon::Confirm, PixelFormat::Mono1) => (&ICON_CHECK_MONO1, MONO_W, MONO_H),
-        (Icon::Failure | Icon::Reject, PixelFormat::Gray4) => (&ICON_CROSS_GRAY4, ICON_W, ICON_H),
+        (Icon::Failure | Icon::Reject, PixelFormat::Gray4) => (&ICON_CROSS_GRAY4_THEMED, ICON_W, ICON_H),
         (Icon::Failure | Icon::Reject, PixelFormat::Mono1) => (&ICON_CROSS_MONO1, MONO_W, MONO_H),
         (Icon::None | Icon::Processing, _) => return None,
     };

@@ -22,7 +22,7 @@
 //! let s = Screen::new();
 //! s.clear(Color::White);
 //! s.fill_rect(0, 0, s.width(), 4, Color::Black); // a top rule
-//! s.draw_text(20, 20, s.width() - 40, 40, "Vanadium", Font::Large, Color::Black);
+//! s.draw_text(20, 20, s.width() - 40, 40, "Vanadium", Font::Large, Color::Black, Color::White);
 //! s.refresh();
 //! ```
 

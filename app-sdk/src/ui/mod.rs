@@ -36,10 +36,17 @@ pub use icons::{Icon, IconBitmap};
 pub use refresh::{EinkPolicy, ImmediatePolicy, RefreshPolicy};
 pub use scene::{render_diff, Node, Scene};
 pub use widgets::{
-    button, draw_icon_centered, nav_from_button, touch_release, wrap_lines, Nav, Surface,
+    button, draw_icon_centered, nav_arrows, nav_from_button, touch_release, wrap_lines, Nav,
+    Surface, NAV_ARROW_W,
 };
 
 pub use common::ecall_constants::{Color, Font, PixelFormat};
+
+/// Default UI theme: a white foreground (text, arrows, icons) on a black background. The
+/// two-button flows, the dashboard, and the status icons all paint with these so the whole
+/// SDK shares one look; flip them here to re-theme everything.
+pub const FG: Color = Color::White;
+pub const BG: Color = Color::Black;
 
 /// Horizontal alignment of text within its box.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

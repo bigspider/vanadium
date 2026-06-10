@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 
 use super::icons::IconBitmap;
 use super::scene::Scene;
-use super::{render_diff, Align, Capabilities, Color, Font, Point, Rect, Renderer, ScreenRenderer, Size};
+use super::{render_diff, Align, Capabilities, Color, Font, Point, Rect, Renderer, ScreenRenderer, Size, BG, FG};
 use crate::ux::{ButtonEvent, Event, TouchState};
 
 /// A drawing surface for modal UX: it owns the renderer and fully repaints a [`Scene`].
@@ -62,13 +62,35 @@ impl Surface {
     }
 }
 
-/// Draws a flat button (light-gray fill + centered label) into `sc`.
+/// Width of the side gutters reserved for the [`nav_arrows`]. Two-button screens lay out
+/// their content in the column between them (`screen.w - 2 * NAV_ARROW_W`) so a long title
+/// or value can never overlap — and so hide — an arrow.
+pub const NAV_ARROW_W: i32 = 10;
+
+/// Draws the `<` / `>` navigation hints vertically centered in the reserved side gutters
+/// (the Nano standard), one for each direction that is currently available. Shared by every
+/// two-button screen — the modal flows (`review_pairs`, `show_confirm_reject`) and the app
+/// dashboard — so the navigation chrome stays consistent across the whole SDK.
+pub fn nav_arrows(surf: &Surface, sc: &mut Scene, left: bool, right: bool) {
+    let screen = surf.screen();
+    let lh = surf.caps().font(Font::Bold).line_height as i32;
+    let y = ((screen.h - lh) / 2).max(0);
+    if left {
+        sc.text(Rect::new(0, y, NAV_ARROW_W, lh), "<", Font::Bold, FG, BG, Align::Center);
+    }
+    if right {
+        sc.text(Rect::new(screen.w - NAV_ARROW_W, y, NAV_ARROW_W, lh), ">", Font::Bold, FG, BG, Align::Center);
+    }
+}
+
+/// Draws a flat button (dark-gray fill + centered white label) into `sc`. Used on the touch
+/// (Gray4) panels; the gray fill keeps it distinct from the black background.
 pub fn button(sc: &mut Scene, area: Rect, label: &str, font: Font) {
     if area.is_empty() {
         return;
     }
-    sc.rect(area, Color::LightGray);
-    sc.text(area, label, font, Color::Black, Color::LightGray, Align::Center);
+    sc.rect(area, Color::DarkGray);
+    sc.text(area, label, font, FG, Color::DarkGray, Align::Center);
 }
 
 /// Adds an icon centered horizontally in `screen`, with its top at `top_y` rounded down to

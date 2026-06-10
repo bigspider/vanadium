@@ -17,8 +17,8 @@ pub use common::ux::{
 
 use crate::ecalls;
 use crate::ui::{
-    button, draw_icon_centered, icons, nav_from_button, touch_release, wrap_lines, Align, Color,
-    Font, InputModel, Nav, Rect, Scene, Surface,
+    button, draw_icon_centered, icons, nav_arrows, nav_from_button, touch_release, wrap_lines,
+    Align, Font, InputModel, Nav, Rect, Scene, Surface, BG, FG, NAV_ARROW_W,
 };
 
 // Returns true if the device supports the page UX model, false if it supports the step UX model.
@@ -136,8 +136,8 @@ fn text_block(
             Rect::new(x, yy, w, lh),
             line,
             font,
-            Color::Black,
-            Color::White,
+            FG,
+            BG,
             align,
         );
         yy += lh;
@@ -173,7 +173,7 @@ pub(crate) fn nav_from_event(e: &Event) -> Option<Nav> {
 pub(crate) fn paint_info(icon: Icon, text: &str) {
     let mut surf = Surface::new();
     let screen = surf.screen();
-    let bg = Color::White;
+    let bg = BG;
 
     // The narrow Nano panel can't fit the large icon + Large font, so the two-button devices
     // use the smaller 20×20 icon (selected by pixel format in `icons::bitmap`), a tighter
@@ -220,7 +220,7 @@ pub async fn show_info(icon: Icon, text: &str) {
 pub fn show_spinner(text: &str) {
     let mut surf = Surface::new();
     let screen = surf.screen();
-    let bg = Color::White;
+    let bg = BG;
     let content_w = screen.w - 2 * MARGIN;
 
     let lh = line_h(&surf, Font::Large);
@@ -235,7 +235,7 @@ pub fn show_spinner(text: &str) {
         Rect::new(MARGIN, y, content_w, lh),
         "...",
         Font::Large,
-        Color::Black,
+        FG,
         bg,
         Align::Center,
     );
@@ -264,7 +264,7 @@ async fn confirm_reject_pointer(
     reject: &str,
 ) -> bool {
     let screen = surf.screen();
-    let bg = Color::White;
+    let bg = BG;
     let content_w = screen.w - 2 * MARGIN;
 
     // Two buttons side by side along the bottom: reject (left), confirm (right).
@@ -308,7 +308,7 @@ async fn confirm_reject_two_button(
     let mut step = 0usize;
     loop {
         let mut sc = Scene::new();
-        sc.rect(surf.screen(), Color::White);
+        sc.rect(surf.screen(), BG);
         match step {
             0 => draw_two_button_message(surf, &mut sc, title, text, step, n_steps),
             1 => draw_two_button_choice(surf, &mut sc, confirm, Icon::Confirm, step, n_steps),
@@ -415,7 +415,7 @@ async fn review_pairs_pointer(
     _long_press: bool,
 ) -> bool {
     let screen = surf.screen();
-    let bg = Color::White;
+    let bg = BG;
     let content_w = screen.w - 2 * MARGIN;
 
     let top_h = BTN_H + 8; // top bar: a Cancel button + page indicator
@@ -450,7 +450,7 @@ async fn review_pairs_pointer(
             Rect::new(screen.w - MARGIN - 120, 4, 120, BTN_H),
             format!("{} / {}", page + 1, n_pages),
             Font::Regular,
-            Color::Black,
+            FG,
             bg,
             Align::Right,
         );
@@ -523,7 +523,7 @@ async fn review_pairs_two_button(
     let mut step = 0usize;
     loop {
         let mut sc = Scene::new();
-        sc.rect(surf.screen(), Color::White);
+        sc.rect(surf.screen(), BG);
         if step == 0 {
             draw_two_button_message(surf, &mut sc, intro_text, intro_subtext, step, n_steps);
         } else if step <= n_pair_steps {
@@ -564,19 +564,14 @@ async fn review_pairs_two_button(
 // Two-button (Nano) screen drawing
 // -----------------------------------------------------------------------------
 
-// Draws left/right arrow hints in the top corners for steps that have a previous / next.
+// Draws the nav arrows for a step that has a previous (`step > 0`) / next (`step + 1 <
+// n_steps`), via the shared [`nav_arrows`] helper so every two-button screen matches.
 fn draw_nav_arrows(surf: &Surface, sc: &mut Scene, step: usize, n_steps: usize) {
-    let w = surf.screen().w;
-    let lh = line_h(surf, Font::Regular);
-    if step > 0 {
-        sc.text(Rect::new(0, 0, 12, lh), "<", Font::Bold, Color::Black, Color::White, Align::Center);
-    }
-    if step + 1 < n_steps {
-        sc.text(Rect::new(w - 12, 0, 12, lh), ">", Font::Bold, Color::Black, Color::White, Align::Center);
-    }
+    nav_arrows(surf, sc, step > 0, step + 1 < n_steps);
 }
 
-// A title + body text screen for the Nano, vertically stacked from the top.
+// A title + body text screen for the Nano, vertically stacked from the top. Content is inset
+// from the side gutters so it stays clear of the nav arrows.
 fn draw_two_button_message(
     surf: &Surface,
     sc: &mut Scene,
@@ -586,11 +581,11 @@ fn draw_two_button_message(
     n_steps: usize,
 ) {
     draw_nav_arrows(surf, sc, step, n_steps);
-    let w = surf.screen().w;
+    let cw = surf.screen().w - 2 * NAV_ARROW_W;
     let mut y = 2;
-    y = text_block(surf, sc, 0, y, w, title, Font::Bold, Align::Center);
+    y = text_block(surf, sc, NAV_ARROW_W, y, cw, title, Font::Bold, Align::Center);
     y += 2;
-    text_block(surf, sc, 0, y, w, body, Font::Regular, Align::Center);
+    text_block(surf, sc, NAV_ARROW_W, y, cw, body, Font::Regular, Align::Center);
 }
 
 // A centered choice screen for the Nano ("Confirm" / "Reject"); both-button press selects it.
@@ -603,11 +598,11 @@ fn draw_two_button_choice(
     n_steps: usize,
 ) {
     draw_nav_arrows(surf, sc, step, n_steps);
-    let w = surf.screen().w;
     let h = surf.screen().h;
+    let cw = surf.screen().w - 2 * NAV_ARROW_W;
     let lh = line_h(surf, Font::Bold);
     let y = ((h - lh) / 2).max(2);
-    sc.text(Rect::new(0, y, w, lh), label, Font::Bold, Color::Black, Color::White, Align::Center);
+    sc.text(Rect::new(NAV_ARROW_W, y, cw, lh), label, Font::Bold, FG, BG, Align::Center);
 }
 
 // -----------------------------------------------------------------------------
@@ -623,7 +618,7 @@ pub fn ux_idle() {
     const READY: &str = "Application is ready";
     let mut surf = Surface::new();
     let screen = surf.screen();
-    let bg = Color::White;
+    let bg = BG;
     let content_w = screen.w - 2 * MARGIN;
     // The Large title font is wider than the narrow two-button Nano panel, so "Application
     // is ready" overflows it (and Speculos rejects the off-screen blit). Fall back to the
