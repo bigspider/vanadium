@@ -609,23 +609,24 @@ fn draw_two_button_choice(
 /// gesture itself — it just paints and returns. With no NBGL screen active, raw input
 /// events flow straight to the app, which is what lets the flows above work on Nano.
 pub fn ux_idle() {
+    const READY: &str = "Application is ready";
     let mut surf = Surface::new();
     let screen = surf.screen();
     let bg = Color::White;
     let content_w = screen.w - 2 * MARGIN;
-    let lh = line_h(&surf, Font::Large);
-    let y = ((screen.h - lh) / 2).max(MARGIN);
+    // The Large title font is wider than the narrow two-button Nano panel, so "Application
+    // is ready" overflows it (and Speculos rejects the off-screen blit). Fall back to the
+    // Regular font there, and wrap so any title still fits the available width.
+    let font = if surf.caps().input == InputModel::TwoButton {
+        Font::Regular
+    } else {
+        Font::Large
+    };
+    let text_h = block_height(&surf, content_w, READY, font);
+    let y = ((screen.h - text_h) / 2).max(MARGIN);
 
     let mut sc = Scene::new();
     sc.rect(screen, bg);
-    let _ = content_w;
-    sc.text(
-        Rect::new(MARGIN, y, content_w, lh),
-        "Application is ready",
-        Font::Large,
-        Color::Black,
-        bg,
-        Align::Center,
-    );
+    text_block(&surf, &mut sc, MARGIN, y, content_w, READY, font, Align::Center);
     surf.paint(&sc);
 }
