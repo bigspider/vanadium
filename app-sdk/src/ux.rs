@@ -1,3 +1,4 @@
+use core::cell::RefCell;
 use core::ops::Range;
 
 pub mod canvas;
@@ -7,6 +8,7 @@ pub mod screen;
 pub mod screen_target;
 
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use common::ecall_constants::DEVICE_PROPERTY_ID;
@@ -507,6 +509,125 @@ async fn review_pairs_pointer(
     }
 }
 
+// Caches each character's pixel width for `font`. NBGL's `getTextWidth` sums per-character
+// advances with no kerning, so a string's width is the sum of its characters' widths: we
+// measure each distinct ASCII character once (via the `display_text_width` ECALL) and reuse
+// it. This lets pagination compute split points from arithmetic alone — no per-probe ECALLs,
+// and no repeated string measuring.
+fn cached_char_width(surf: &Surface, font: Font) -> impl Fn(char) -> i32 + '_ {
+    let cache = RefCell::new([-1i32; 128]); // per-ASCII-char width, -1 = not measured yet
+    move |c: char| {
+        let measure = || {
+            let mut buf = [0u8; 4];
+            surf.measure(font, c.encode_utf8(&mut buf)).w as i32
+        };
+        let i = c as usize;
+        if i >= 128 {
+            return measure();
+        }
+        let mut cache = cache.borrow_mut();
+        if cache[i] < 0 {
+            cache[i] = measure();
+        }
+        cache[i]
+    }
+}
+
+// Splits `value` into the body text for each page so it fits in `per_page` lines at width
+// `cw`, joined by an inline ellipsis at every cut: each page but the last ends with "..." and
+// each page but the first begins with "...". A value that already fits comes back unchanged.
+//
+// The fast, approximate splitter: it character-wraps using a prefix-sum table of character
+// widths — one pass, with no allocations or ECALLs in the inner loop — instead of re-wrapping
+// candidate strings. For the long no-space values that actually paginate (keys, hex,
+// addresses) character wrapping matches the renderer's wrapping exactly; for text with spaces
+// a split may fall mid-word, which is acceptable here.
+fn paginate_value(
+    cw: i32,
+    per_page: usize,
+    value: &str,
+    char_width: &impl Fn(char) -> i32,
+) -> Vec<String> {
+    let chars: Vec<char> = value.chars().collect();
+    let n = chars.len();
+    // cum[k] = pixel width of chars[0..k].
+    let mut cum = Vec::with_capacity(n + 1);
+    let mut acc = 0i32;
+    cum.push(0);
+    for &c in &chars {
+        acc += char_width(c);
+        cum.push(acc);
+    }
+
+    // The largest line end at or after `from` whose width fits `budget` (always at least one
+    // character, so we keep advancing). Binary search over the cumulative widths.
+    let line_end = |from: usize, budget: i32| -> usize {
+        let limit = cum[from] + budget.max(1);
+        let (mut lo, mut hi) = (from, n);
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if cum[mid] <= limit {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        lo.max(from + 1).min(n)
+    };
+
+    // Fast path: the whole value character-wraps within `per_page` lines — one page, no marks.
+    let mut probe = 0usize;
+    let mut lines = 0usize;
+    while probe < n {
+        probe = line_end(probe, cw);
+        lines += 1;
+        if lines > per_page {
+            break;
+        }
+    }
+    if lines <= per_page {
+        let mut single = Vec::new();
+        single.push(String::from(value));
+        return single;
+    }
+
+    let ell = 3 * char_width('.'); // width of the "..." marker
+    let mut pages = Vec::new();
+    let mut start = 0usize;
+    let mut first = true;
+    while start < n {
+        // Fill up to `per_page` lines, reserving room for the leading ellipsis on the first
+        // line of a continuation page and (conservatively) a trailing ellipsis on the last.
+        let mut pos = start;
+        for line in 0..per_page {
+            if pos >= n {
+                break;
+            }
+            let mut budget = cw;
+            if line == 0 && !first {
+                budget -= ell;
+            }
+            if line == per_page - 1 {
+                budget -= ell;
+            }
+            pos = line_end(pos, budget);
+        }
+        let last = pos >= n;
+        let mut s = String::new();
+        if !first {
+            s.push_str("...");
+        }
+        s.extend(chars[start..pos].iter());
+        if !last {
+            s.push_str("...");
+        }
+        pages.push(s);
+        start = pos;
+        first = false;
+    }
+    pages
+}
+
 async fn review_pairs_two_button(
     surf: &mut Surface,
     intro_text: &str,
@@ -514,21 +635,55 @@ async fn review_pairs_two_button(
     pairs: &[TagValue],
     final_button_text: &str,
 ) -> bool {
-    // Steps: intro, one per pair, a confirm step, a reject step.
-    let n_pair_steps = pairs.len();
-    let n_steps = n_pair_steps + 3;
-    let confirm_step = n_pair_steps + 1;
-    let reject_step = n_pair_steps + 2;
+    // Build the flat list of message screens: the intro, then each pair. A value too long for
+    // one screen is split across several pages titled "tag (i/n)" with an inline ellipsis at
+    // each cut (see `paginate_value`); a value that fits keeps its bare tag as the title.
+    let cw = surf.screen().w - 2 * NAV_ARROW_W;
+    let lh_b = line_h(surf, Font::Bold);
+    let lh_r = line_h(surf, Font::Regular);
+    // Cache character widths up front so the pagination below works from arithmetic, with one
+    // ECALL per distinct character instead of a width query per probe.
+    let cwidth_b = cached_char_width(surf, Font::Bold);
+    let cwidth_r = cached_char_width(surf, Font::Regular);
+    let mut msgs: Vec<(String, String)> = Vec::new();
+    msgs.push((String::from(intro_text), String::from(intro_subtext)));
+    for p in pairs {
+        // Reserve vertical space for the title at its worst-case width ("tag (NN/NN)"), so a
+        // title that wraps to two lines can never push a value line off the bottom (which the
+        // panel would clip — losing part of the value being reviewed).
+        let title_w: i32 = format!("{} (99/99)", p.tag).chars().map(&cwidth_b).sum();
+        let title_lines = ((title_w + cw - 1) / cw).max(1);
+        let body_h = surf.screen().h - 2 - title_lines * lh_b - 2;
+        let per_page = ((body_h / lh_r).max(1)) as usize;
+
+        let pages = paginate_value(cw, per_page, &p.value, &cwidth_r);
+        let n = pages.len();
+        for (i, body) in pages.into_iter().enumerate() {
+            let title = if n > 1 {
+                format!("{} ({}/{})", p.tag, i + 1, n)
+            } else {
+                p.tag.clone()
+            };
+            msgs.push((title, body));
+        }
+    }
+    // Release the borrow of `surf` the width caches held, so the render loop can repaint.
+    drop(cwidth_r);
+    drop(cwidth_b);
+
+    // After the messages come the confirm and reject choice steps.
+    let n_msgs = msgs.len();
+    let confirm_step = n_msgs;
+    let reject_step = n_msgs + 1;
+    let n_steps = n_msgs + 2;
 
     let mut step = 0usize;
     loop {
         let mut sc = Scene::new();
         sc.rect(surf.screen(), BG);
-        if step == 0 {
-            draw_two_button_message(surf, &mut sc, intro_text, intro_subtext, step, n_steps);
-        } else if step <= n_pair_steps {
-            let p = &pairs[step - 1];
-            draw_two_button_message(surf, &mut sc, &p.tag, &p.value, step, n_steps);
+        if step < n_msgs {
+            let (title, body) = &msgs[step];
+            draw_two_button_message(surf, &mut sc, title, body, step, n_steps);
         } else if step == confirm_step {
             draw_two_button_choice(surf, &mut sc, final_button_text, Icon::Confirm, step, n_steps);
         } else {
