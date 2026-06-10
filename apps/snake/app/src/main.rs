@@ -53,6 +53,18 @@ fn paint_message(r: &mut ScreenRenderer, w: i32, h: i32, line1: &str, line2: &st
     r.present(ContentHint::FullScreen);
 }
 
+// Overlays a small black-on-white "PAUSED" badge centered on whatever is already on screen,
+// without clearing it, so the frozen board stays visible behind it.
+fn paint_paused(r: &mut ScreenRenderer, w: i32, h: i32) {
+    let pad = 4;
+    let tw = r.measure(Font::Bold, "PAUSED").w as i32;
+    let th = r.caps().font(Font::Bold).line_height as i32;
+    let badge = Rect::new((w - tw) / 2 - pad, (h - th) / 2 - pad, tw + 2 * pad, th + 2 * pad);
+    r.fill_rect(badge, Color::White);
+    r.text(badge, "PAUSED", Font::Bold, Color::Black, Color::White, Align::Center);
+    r.present(ContentHint::Graphics);
+}
+
 // -----------------------------------------------------------------------------
 // Menu
 // -----------------------------------------------------------------------------
@@ -123,8 +135,21 @@ fn paint_board(r: &mut ScreenRenderer, g: &Game, w: i32, h: i32) {
     r.present(ContentHint::FullScreen);
 }
 
-/// Plays one round to its end, then (unless the player quit with both buttons) shows the
-/// final score until a button is released or a short timeout elapses.
+/// Freezes the round, showing a centered "PAUSED" banner, until both buttons are pressed
+/// again. The game clock stops while we sit here (events are consumed but never stepped). A
+/// both-buttons press is delivered as a single press *followed by* `BothPress`, so the
+/// leading press is ignored and only the `BothPress` resumes play.
+async fn pause(r: &mut ScreenRenderer, w: i32, h: i32) {
+    paint_paused(r, w, h);
+    loop {
+        if let Event::Button(ButtonEvent::BothPress) = sdk::ux::get_event().await {
+            return;
+        }
+    }
+}
+
+/// Plays one round to its end, then shows the final score until a button is released or a
+/// short timeout elapses.
 async fn play_round(r: &mut ScreenRenderer, w: i32, h: i32, seed: u32) {
     let cols = (w / CELL) as u8;
     let rows = (h / CELL) as u8;
@@ -132,26 +157,25 @@ async fn play_round(r: &mut ScreenRenderer, w: i32, h: i32, seed: u32) {
 
     paint_board(r, &g, w, h);
 
-    // At most one turn is applied per move, so a quick double-tap can't fold the snake back
-    // on itself (two left turns = a reversal). Left/right are handled on *press* for an
-    // instant response, as a game needs — unlike the menu, which acts on release.
-    let mut turned = false;
+    // The turn requested since the last move (`Some(true)` = left, `Some(false)` = right),
+    // applied at the next move. Buffering it — rather than turning the instant the button is
+    // pressed — lets a both-buttons press cancel the stray leading single press the device
+    // sends before `BothPress`, so pausing never nudges the snake. The result is still
+    // instant (the turn lands on the very next move), and applying at most one turn per move
+    // keeps a quick double-tap from folding the snake back on itself (a reversal).
+    let mut pending: Option<bool> = None;
     let mut ticks = 0u32;
-    let mut quit = false;
     loop {
         match sdk::ux::get_event().await {
-            Event::Button(ButtonEvent::LeftPress) if !turned => {
-                g.turn_left();
-                turned = true;
-            }
-            Event::Button(ButtonEvent::RightPress) if !turned => {
-                g.turn_right();
-                turned = true;
-            }
-            // Pressing both buttons abandons the round and returns to the menu.
+            Event::Button(ButtonEvent::LeftPress) => pending = Some(true),
+            Event::Button(ButtonEvent::RightPress) => pending = Some(false),
+            // Both buttons pause the game; discard any buffered turn from the leading press so
+            // the snake holds its course, and resume (repainting the board) on the next press.
             Event::Button(ButtonEvent::BothPress) => {
-                quit = true;
-                break;
+                pending = None;
+                pause(r, w, h).await;
+                paint_board(r, &g, w, h);
+                ticks = 0;
             }
             Event::Ticker => {
                 ticks += 1;
@@ -159,7 +183,11 @@ async fn play_round(r: &mut ScreenRenderer, w: i32, h: i32, seed: u32) {
                     continue;
                 }
                 ticks = 0;
-                turned = false;
+                match pending.take() {
+                    Some(true) => g.turn_left(),
+                    Some(false) => g.turn_right(),
+                    None => {}
+                }
 
                 let res = g.step();
                 if res.over {
@@ -178,10 +206,6 @@ async fn play_round(r: &mut ScreenRenderer, w: i32, h: i32, seed: u32) {
             }
             _ => {}
         }
-    }
-
-    if quit {
-        return;
     }
 
     let title = if g.won() { "You win!" } else { "Game over" };
