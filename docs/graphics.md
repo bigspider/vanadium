@@ -2,7 +2,10 @@
 
 > Status: **experimental / proof-of-concept**. The blit ECALL, the accelerated
 > command-stream ops, their pixel formats / colors, and the SDK `Canvas` / `Screen`
-> abstractions are all subject to change.
+> abstractions are all subject to change. A design review of this surface against
+> the goal of freezing the core ECALLs produced a concrete revision — see
+> [Stabilization proposal: display ABI v2](#stabilization-proposal-display-abi-v2)
+> at the end of this document.
 
 > **Two drawing models.** There are now two ways to put pixels on the screen, with
 > opposite trade-offs:
@@ -152,7 +155,10 @@ conversion cost:
 | Nano X / S+      | 128×64      | `Mono1`       |
 | Stax             | 400×672     | `Gray4`       |
 | Flex             | 480×600     | `Gray4`       |
-| Apex P           | 300×400     | `Gray4`       |
+| Apex P           | 300×400     | `Mono1`       |
+
+(The Apex P panel is e-ink like Stax/Flex but 1bpp monochrome — see
+`NATIVE_PIXEL_FORMAT` in [`vm/src/handlers/lib/ecall.rs`](../vm/src/handlers/lib/ecall.rs).)
 
 A new device property advertises the native format so the SDK can pick the right
 `Canvas` automatically:
@@ -174,8 +180,11 @@ new ECALL is needed — only new `EventCode` variants decoded by the SDK:
 - touch devices (Stax/Flex/Apex): `Touch { x: u16, y: u16, state: Pressed|Released }`
 - button devices (Nano): `Button { which, state }`
 
-This part is **not** implemented in the current proof-of-concept (the demo is
-output-only); it is the natural follow-up.
+This is now implemented: the VM decodes raw seph touch/button packets while pumping
+events (`wait_for_ticker`), queues them (`EventQueue` in
+[`ux_handler.rs`](../vm/src/handlers/lib/ecall/ux_handler.rs), depth 4, consecutive
+touches coalesced), and `get_event` delivers them to the guest ahead of tickers from
+its internal FIFO. The SDK surfaces them as `Event::Touch` / `Event::Button`.
 
 ## Screen ownership
 
@@ -248,9 +257,11 @@ display_draw_text(x, y, w, h, text, text_len, color_font) -> u32;
 - `color` is a [`Color`](../common/src/ecall_constants.rs) — NBGL's **4-color palette**
   (`Black`, `DarkGray`, `LightGray`, `White`). The vector primitives are 4-color; for
   full 16-level grayscale use the blit path.
-- `color_font` packs `(color << 16) | font`, where `font` is a semantic
-  [`Font`](../common/src/ecall_constants.rs) (`Regular` / `Bold` / `Large`) that the VM
-  maps to the device's matching `nbgl_font_id_e` (the font sets differ per device).
+- `color_font` packs `(bg << 16) | (color << 8) | font`: `color` is the text color, `bg`
+  the color behind the text (NBGL fills the text box with it and anti-aliases the glyphs
+  against it), and `font` a semantic [`Font`](../common/src/ecall_constants.rs)
+  (`Regular` / `Bold` / `Large`) that the VM maps to the device's matching
+  `nbgl_font_id_e` (the font sets differ per device).
 - `display_fill_rect` does **not** require 4-row alignment: `nbgl_frontDrawRect` aligns
   `y0`/`height` itself and preserves the partial rows. (The blit path's column-major /
   4-row constraints do not apply here.)
@@ -338,7 +349,8 @@ graphics, `display_blit` updates an in-memory virtual framebuffer and:
         (font ids, palette, positioning) — Speculos does not enforce these.
   - [ ] rounded-rect / QR / icon ops (need `nbgl_draw.c` compiled into the VM or new
         syscalls) and compressed-image ops (need asset tooling).
-- [ ] raw input events (`Touch` / `Button`) through `get_event`
+- [x] raw input events (`Touch` / `Button`) through `get_event` (queued/coalesced in
+      the VM's `EventQueue`; see the [Input](#input) section)
 
 ## Open questions / risks
 
@@ -373,3 +385,454 @@ graphics, `display_blit` updates an in-memory virtual framebuffer and:
   ~268 KB for a Stax-sized canvas; packing at the native bit depth halves
   (`Gray4`) or eighths (`Mono1`) it at the cost of slightly more code in
   `set_pixel`.
+
+---
+
+# Stabilization proposal: display ABI v2
+
+> Status: **proposal, not implemented**. This is the outcome of a design review of the
+> v1 surface (everything above) against the requirement that the core ECALLs be generic
+> and stable across future devices. Since nothing is frozen yet, v2 *replaces* v1
+> wholesale in one breaking sweep — no compatibility aliases. Each change below states
+> what it fixes.
+
+## Design rules
+
+The v1 surface has the right shape (blit + coarse accelerated ops, draw decoupled from
+refresh), but several **current-hardware quirks leak into the contract**, and the error
+and discoverability stories are inconsistent. v2 follows five rules:
+
+1. **No device quirk in the contract.** Anything that varies per device — alignment
+   granularity, palette, text limits, input model — is *queried* via device properties,
+   never assumed. Today's NBGL constants appear only as example values.
+2. **Parameter errors are never fatal.** A malformed display call returns an error code
+   to the app; only guest memory-access violations abort the V-App. (v1 kills the app
+   for a misaligned blit or a 513-byte string, while an out-of-bounds rect returns 0 —
+   an arbitrary split.)
+3. **Errors carry a reason.** Display ops return `i32`: `>= 0` is success, `< 0` a
+   `DISPLAY_ERR_*` code. v1's bare `0` is undebuggable on device and collides with
+   legitimate results (`display_text_width("")`).
+4. **`0` is never a valid encoding for an enum the app passes in.** `PixelFormat`,
+   `RefreshMode` and `Font` start at 1, so 0 uniformly means invalid/unknown — including
+   in `get_device_property`, which returns 0 for unknown properties instead of aborting.
+5. **Effects are defined, not inherited from NBGL.** Wherever v1's answer was "whatever
+   this device's NBGL does" (non-native blit formats, gray on mono panels, text
+   overflowing its box), v2 specifies the result.
+
+Non-goal: command batching. The accelerated ops are coarse (a handful per frame), so one
+ECALL per op is fine; revisit only if profiling on hardware says otherwise.
+
+## Numbering
+
+Display ops move to a dedicated block, **40–63**. v1 wedged them into 12–18 around the
+pre-existing `get_device_property = 15`, leaving a single free slot — while rounded
+rects, icons, lines, QR codes and compressed images are all planned. (The 20/21
+collision with the storage ECALLs that briefly shipped on this branch is the other
+argument: numbering needs room *and* a guard.)
+
+```rust
+pub const ECALL_DISPLAY_BLIT: u32 = 40;
+pub const ECALL_DISPLAY_REFRESH: u32 = 41;
+pub const ECALL_DISPLAY_FILL_RECT: u32 = 42;
+pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 43;
+pub const ECALL_DISPLAY_TEXT_WIDTH: u32 = 44;
+pub const ECALL_DISPLAY_FONT_METRICS: u32 = 45;
+// 46..=63 reserved for future display ops (icon, line, rounded rect,
+// QR code, compressed images, mode-switch if ever needed, ...).
+```
+
+Plus a compile-time uniqueness guard over all `ECALL_*` constants in `common` (a const
+assertion or a unit test that collects and sorts them), so a collision can never again
+compile silently.
+
+## Common conventions
+
+- **Coordinates are packed in pairs**, as `DEVICE_PROPERTY_SCREEN_SIZE` already does:
+  `pos = (x << 16) | y` and `size = (w << 16) | h`, each component a `u16`. This frees
+  registers for clean semantic arguments — the cramped 8-register ABI is the only reason
+  v1 had to invent the `color_font` bitfield, whose documented layout had already
+  drifted from the code within this branch.
+- **Return type `i32`** (in `a0`). Negative values are errors:
+
+```rust
+pub const DISPLAY_ERR_INVALID_ARG: i32 = -1;   // malformed value: unknown enum, bad UTF-8, interior NUL, nonzero reserved bits
+pub const DISPLAY_ERR_UNSUPPORTED: i32 = -2;   // well-formed but newer than this VM/device (probe-able)
+pub const DISPLAY_ERR_OUT_OF_BOUNDS: i32 = -3; // rectangle not contained in the screen
+pub const DISPLAY_ERR_BAD_LAYOUT: i32 = -4;    // stride / buffer_len inconsistent with the geometry
+pub const DISPLAY_ERR_ALIGNMENT: i32 = -5;     // DEVICE_PROPERTY_DISPLAY_GRANULARITY violated
+pub const DISPLAY_ERR_TOO_LONG: i32 = -6;      // text exceeds DEVICE_PROPERTY_MAX_TEXT_LEN
+```
+
+  `INVALID_ARG` vs `UNSUPPORTED` is the forward-compatibility hinge: an app probing a
+  new `PixelFormat` or `Font` role on an older VM gets `UNSUPPORTED` and falls back,
+  instead of being indistinguishable from a bug.
+
+## Device properties
+
+`get_device_property` changes contract: **an unknown property returns 0** (v1 aborts the
+V-App), and every defined property has a nonzero encoding so 0 is unambiguous.
+
+```rust
+pub const DEVICE_PROPERTY_ID: u32 = 0x01;                  // unchanged
+pub const DEVICE_PROPERTY_SCREEN_SIZE: u32 = 0x02;         // unchanged: (w << 16) | h
+pub const DEVICE_PROPERTY_FEATURES: u32 = 0x03;            // bits now defined, below
+pub const DEVICE_PROPERTY_PIXEL_FORMAT: u32 = 0x04;        // a PixelFormat (now >= 1)
+pub const DEVICE_PROPERTY_DISPLAY_GRANULARITY: u32 = 0x05; // packed alignments, below
+pub const DEVICE_PROPERTY_MAX_TEXT_LEN: u32 = 0x06;        // max text bytes per draw/measure op
+pub const DEVICE_PROPERTY_ABI_REVISION: u32 = 0x07;        // >= 1, bumped on ABI additions
+```
+
+**`DEVICE_PROPERTY_FEATURES`** (v1 returns 0 with "to be defined"; meanwhile the SDK
+hardcodes `native_text` / `partial_refresh` / `fast_mono_refresh` to `true` and infers
+the input model from a device-ID table — `has_page_api()` — that *panics on unknown
+devices*, which defeats the point of a device-independent VM):
+
+```rust
+pub const FEATURE_TOUCH: u32 = 1 << 0;             // absolute-pointer input; get_event may deliver Touch
+pub const FEATURE_BUTTONS: u32 = 1 << 1;           // hardware buttons; get_event may deliver Button
+pub const FEATURE_ACCEL_RECT: u32 = 1 << 2;        // display_fill_rect available
+pub const FEATURE_ACCEL_TEXT: u32 = 1 << 3;        // display_draw_text / _text_width / _font_metrics available
+pub const FEATURE_PARTIAL_REFRESH: u32 = 1 << 4;   // display_refresh honors sub-rectangles
+pub const FEATURE_FAST_MONO_REFRESH: u32 = 1 << 5; // Mono/MonoFast refresh meaningfully cheaper than FullQuality
+```
+
+Current devices: all of `ACCEL_RECT | ACCEL_TEXT | PARTIAL_REFRESH | FAST_MONO_REFRESH`,
+plus `TOUCH` on stax/flex/apex_p and `BUTTONS` on nanox/nanosplus. The SDK
+`Capabilities` then reads these instead of hardcoding, and `InputModel` comes from the
+TOUCH/BUTTONS bits — the `has_page_api()` table is deleted.
+
+**`DEVICE_PROPERTY_DISPLAY_GRANULARITY`**: packed
+`(x_align << 24) | (y_align << 16) | (w_align << 8) | h_align`, each a power of two
+`>= 1`. Today's NBGL devices report `(1, 4, 1, 4)` = `0x01040104`. It constrains
+`display_blit` destination rectangles (violation → `DISPLAY_ERR_ALIGNMENT`);
+`display_refresh` self-aligns instead (see below); `display_fill_rect` and
+`display_draw_text` have no caller-visible granularity. This replaces the hardcoded
+"y and h must be multiples of 4" — an NBGL/e-ink driver quirk that v1 baked into the
+generic contract (and that the SDK duplicates as `& !3` in `align4_clip` and
+`Canvas::flush_area`). A future panel with byte-page rows (8), per-pixel freedom (1), or
+column constraints just advertises different values and existing app binaries keep
+working.
+
+**`DEVICE_PROPERTY_MAX_TEXT_LEN`**: today 512 (`MAX_DISPLAY_TEXT_LEN`), which in v1 is
+invisible — not in the trait docs, not queryable, unenforced on native/Speculos, *fatal*
+on device.
+
+**`DEVICE_PROPERTY_ABI_REVISION`**: coarse insurance for semantic changes that don't fit
+a feature bit. Feature bits remain the primary probe; apps should not gate on the
+revision unless a bit doesn't exist for what they need.
+
+## Colors are RGB888
+
+Every color argument becomes `0x00RRGGBB` (top byte reserved-zero; nonzero →
+`DISPLAY_ERR_INVALID_ARG`, keeping the door open for alpha or wider gamuts).
+
+v1's `Color` enum is documented as "NBGL's 4-color palette" with `color_t` values —
+i.e. today's Ledger hardware baked into the supposedly stable ABI. A future color panel
+could express nothing beyond 4 levels without changing every draw signature, and the
+behavior of `DarkGray`/`LightGray` on the 1bpp Apex panel is *unspecified* (the SDK
+theme code already dodges it empirically: "gray collapses to white").
+
+In v2 the device renders the **nearest color representable by that operation's path**,
+with a normative quantization for non-color panels so results are deterministic:
+
+```text
+luma = (77*R + 150*G + 29*B + 128) >> 8          # 0..=255 (BT.601 integer approximation)
+
+Gray4 surface (blit-equivalent):  level = luma >> 4
+4-level accelerated path (NBGL color_t): index = luma >> 6   # Black, DarkGray, LightGray, White
+Mono1 surface:                    luma >= 128 ? white : black
+```
+
+The four canonical values `0x000000`, `0x555555`, `0xAAAAAA`, `0xFFFFFF` quantize
+*exactly* to NBGL's palette on every current path (luma 0/85/170/255 → `color_t` 0/1/2/3
+and Gray4 0/5/10/15, matching `EXPAND_TO_4BPP`), so the SDK keeps a `Color` type with
+those named constants and app code barely changes. On Mono1, `0x555555` is defined to
+render black and `0xAAAAAA` white — the previously unspecified case.
+
+Conscious trade-off: quantization means a color request is *approximated, never
+rejected*. Pixel-exact output remains the blit path's job, in the native `PixelFormat`.
+
+## Pixel formats
+
+```rust
+#[repr(u32)]
+pub enum PixelFormat {
+    /// 1 bpp: 0 = black, 1 = white. Rows MSB-first, padded to a byte: stride = (w+7)/8.
+    Mono1 = 1,
+    /// 4 bpp grayscale: 0 = black ..= 15 = white. High nibble = left pixel,
+    /// rows padded to a byte: stride = (w+1)/2.
+    Gray4 = 2,
+}
+```
+
+Two changes: encodings start at 1 (rule 4), and Mono1 is defined as **black/white**
+rather than v1's "background/foreground", which implied a configurability that doesn't
+exist (both the VM and the native backend already render 0=black, 1=white).
+
+**A VM must accept every `PixelFormat` defined at its ABI revision, on every device**,
+converting when the format isn't the panel's native one:
+
+- `Mono1 → Gray4`: 0 → 0, 1 → 15.
+- `Gray4 → Mono1`: level >= 8 → white, else black (fixed threshold, no dithering, so
+  output is deterministic and testable).
+
+Rationale: v1 forwards a non-native format straight to NBGL, which renders **gibberish**
+(a Gray4 blit on the 1bpp panels — found the hard way with the SDK status icons, and
+masked by Speculos). Silent garbage is the one behavior a stable ABI cannot have. Of
+the two fixes, conversion is chosen over rejection because it makes blits
+device-independent — Mono1 art becomes a universal donor format, and today's binaries
+keep rendering on tomorrow's panels — and it is effectively free: the VM's blit path
+already visits every pixel in the band transpose. A format *newer than the VM* fails
+soft with `DISPLAY_ERR_UNSUPPORTED`, so apps can probe and fall back. Apps should still
+prefer the advertised native format: conversion preserves correctness, not fidelity.
+
+## The ops
+
+### display_blit
+
+```rust
+display_blit(
+    dst: u32,           // (x << 16) | y — destination top-left, screen px
+    size: u32,          // (w << 16) | h
+    buffer: *const u8,  // a source bitmap in guest memory, row-major, top-left origin
+    buffer_len: u32,    // total readable bytes at `buffer`
+    src: u32,           // (x << 16) | y — top-left of the source rect inside the bitmap
+    src_stride: u32,    // bytes between consecutive bitmap rows
+    format: u32,        // PixelFormat of the bitmap
+) -> i32                // 0 = success, DISPLAY_ERR_* < 0
+```
+
+This is the classic copy-rect: a rectangle *inside a larger source bitmap*, instead of
+v1's exactly-packed buffer. Rationale: the dominant real call is "flush a dirty
+sub-rectangle of a full-frame guest framebuffer", and under v1 the SDK must repack that
+sub-rect row by row into a temporary allocation (the "general path" in
+`Canvas::flush_area`) because its rows aren't contiguous and its left edge isn't
+byte-aligned. With `src`/`src_stride` the VM reads each band row at the right guest
+offset directly — and arbitrary bit offsets cost nothing, because the band transpose
+already addresses every pixel individually. v1 is the degenerate case
+`src = 0, src_stride = stride(format, w)`. Adding this later would mean a second blit
+ECALL; adding it now is free.
+
+Validation, in order (all soft):
+
+1. `format` known → else `INVALID_ARG` (malformed) / `UNSUPPORTED` (newer than VM);
+2. `w == 0 || h == 0` → success, no-op;
+3. destination rect within the screen → else `OUT_OF_BOUNDS`;
+4. destination rect meets `DEVICE_PROPERTY_DISPLAY_GRANULARITY` → else `ALIGNMENT`;
+5. every byte the source rect addresses lies within `buffer_len`; for the row-major
+   layout this is
+   `(src_y + h - 1) * src_stride + ceil(((src_x + w) * bpp) / 8) <= buffer_len`
+   → else `BAD_LAYOUT`.
+
+Draws to the framebuffer only; `display_refresh` makes it visible (the two-phase model
+is unchanged — it is the part of v1 that is right).
+
+### display_refresh
+
+```rust
+display_refresh(
+    pos: u32,   // (x << 16) | y
+    size: u32,  // (w << 16) | h
+    mode: u32,  // RefreshMode (a hint)
+) -> i32
+
+#[repr(u32)]
+pub enum RefreshMode {
+    /// Best quality the panel offers. (v1 `FullColor` — renamed: nothing about it is color.)
+    FullQuality = 1,
+    /// Localized update, quality maintained. (v1 `Partial`.)
+    Partial = 2,
+    /// Black & white, contrast priority. (v1 `BlackWhite`.)
+    Mono = 3,
+    /// Black & white, speed priority. (v1 `BlackWhiteFast`.)
+    MonoFast = 4,
+}
+```
+
+Two semantic changes:
+
+- **Modes are advisory.** The device maps a requested mode to the nearest thing its
+  panel supports: a mono panel treats `FullQuality` as `Mono`; a fast LCD may ignore
+  modes entirely. Every *defined* mode therefore succeeds on every device; only a mode
+  value newer than the VM returns `UNSUPPORTED` (probe-able). This legitimizes what the
+  hardware already forces and lets future panels map the vocabulary sensibly.
+- **The VM aligns the rectangle itself**, expanding outward to the granularity and
+  clipping to the screen. Unlike a blit — where expansion would require pixels the
+  caller didn't provide — refreshing a slightly larger area is harmless: the framebuffer
+  already holds the correct pixels. This removes v1's inconsistency (blit enforced
+  alignment *fatally*; refresh didn't enforce it at all and fed unaligned areas to the
+  driver with unverified results) and deletes the SDK-side `align4_clip` duplication.
+
+### display_fill_rect
+
+```rust
+display_fill_rect(
+    pos: u32,   // (x << 16) | y
+    size: u32,  // (w << 16) | h
+    color: u32, // RGB888
+) -> i32
+```
+
+Semantics unchanged from v1 apart from the RGB color and packed coordinates. No
+granularity constraint: the implementation must handle partial rows internally (as
+NBGL's `nbgl_frontDrawRect` already does).
+
+### display_draw_text
+
+```rust
+display_draw_text(
+    pos: u32,          // (x << 16) | y — top-left of the text box
+    size: u32,         // (w << 16) | h — the clip box
+    text: *const u8,   // UTF-8, no interior NUL
+    text_len: u32,     // bytes; <= DEVICE_PROPERTY_MAX_TEXT_LEN
+    font: u32,         // Font role
+    color: u32,        // RGB888 text color
+    bg: u32,           // RGB888 box fill / anti-alias background
+) -> i32
+```
+
+Font, color and bg are separate registers (affordable thanks to coordinate packing),
+deleting the `color_font` bitfield.
+
+**Defined rendering semantics** (v1 inherited "whatever NBGL does on this device" for
+all of these):
+
+1. The box is filled with `bg`, which is also the anti-aliasing background.
+2. The string is drawn as one line, the font's top edge at the box top, left edge at
+   the box left. (Alignment/centering is the caller's job via measurement — as the SDK
+   already does.)
+3. **Glyphs are clipped to the box**: text wider than `w` or taller than `h` never
+   paints outside it. On NBGL this may require the VM to truncate at the last fitting
+   glyph using `nbgl_getTextWidth` prefix measurement — the contract is the clip; the
+   technique is the VM's business.
+4. Both colors quantize per the RGB rules; anti-aliasing on grayscale panels blends
+   between the quantized fg and bg.
+
+Errors: bad UTF-8 / interior NUL / nonzero top color byte → `INVALID_ARG`; font role
+newer than the VM → `UNSUPPORTED` (v1 inconsistently rejected a bad fg but silently
+replaced a bad bg with White); box off-screen → `OUT_OF_BOUNDS`; over the advertised
+length → `TOO_LONG` (soft — in v1 this kills the V-App, and only on real hardware).
+
+### display_text_width
+
+```rust
+display_text_width(font: u32, text: *const u8, text_len: u32) -> i32
+// >= 0: rendered width in px (must equal what display_draw_text would render)
+// < 0:  DISPLAY_ERR_*
+```
+
+Same text validation as `display_draw_text`. The signed convention removes v1's
+ambiguity where `0` meant both "error" and "empty string".
+
+### display_font_metrics
+
+```rust
+display_font_metrics(font: u32) -> i32
+// >= 0: (height << 16) | line_height, both in px
+// < 0:  DISPLAY_ERR_*
+
+#[repr(u32)]
+pub enum Font {
+    Regular = 1,
+    Bold = 2,
+    Large = 3,
+}
+```
+
+Heights are `<= 0x7FFF`, so the packed value never enters the error space. Semantic
+roles rather than font ids stay — that part of v1 is right: apps lay out against
+queried metrics, so per-device font differences can't break them. New roles may be
+appended; an old VM answers `UNSUPPORTED` and the app falls back. If richer metrics
+(baseline/ascent/descent for mixed-font lines) become necessary, they are a new ECALL
+in the reserved block, not a repacking.
+
+## Input events
+
+The 16-byte `EventData` payload and the `get_event` ABI stay. One wording change buys
+all future extensibility:
+
+> Bytes of a defined event's payload beyond its declared fields are **reserved and must
+> be zero**.
+
+v1 says they are "undefined and could change in future versions" — which would make it
+forever impossible to add a field, since an old VM could legitimately emit garbage where
+the new field lives. The VM already zeroes the payload (`EventData::default()` before
+writing the variant), so this documents reality and keeps e.g. a millisecond timestamp
+(gesture velocity) or a touch contact id (multi-touch) addable without a new event code.
+
+Payload layouts (zero-invalid states per rule 4):
+
+```rust
+TouchEvent  { x: u16, y: u16, state: u8 /* 1 = Pressed, 2 = Released */, _reserved: u8 }
+ButtonEvent { button: u8 /* 1 = Left, 2 = Right, 3 = Both */, state: u8 /* 1 = Pressed, 2 = Released */ }
+```
+
+`ButtonEvent` becomes (button, state) instead of v1's six-variant enum: the same
+information, but a future device with more buttons adds *ids* rather than a
+combinatorial set of variants. "Both" stays a distinct id because the OS itself
+synthesizes it as a gesture.
+
+Queueing contract (the VM's `EventQueue`):
+
+- Discrete events (buttons, future kinds) are delivered **in order and none is
+  silently lost** within a queue window; on overflow (depth 4) the *oldest* event is
+  dropped — documented behavior, not an implementation accident.
+- Touch coalescing merges **Pressed onto Pressed only** (a drag's move-flood). It never
+  merges across a press/release edge: v1 coalesces *any* touch onto *any* queued touch,
+  so a fast tap completed within one ticker window delivers only the `Released` and the
+  press edge is lost — contradicting the framework's own "react on press" goal.
+- If input arrived while `get_event` was pumping for a ticker, the input is returned
+  **before** the ticker. (v1 returns the ticker first and the input on the next call —
+  mostly harmless, but ordering must be defined, and input-first is the useful
+  definition.)
+
+## Screen ownership
+
+Stated contract (no new ECALL needed yet):
+
+- The first `display_*` call puts the V-App in **direct-draw mode**: the framebuffer
+  belongs to the app, the VM draws nothing of its own, and input arrives as raw
+  Touch/Button events.
+- Any `show_page` / `show_step` ends direct-draw mode: NBGL repaints, framebuffer
+  contents become **undefined**, and the next `display_*` call re-enters direct-draw
+  mode where the app must repaint everything it relies on (a full repaint, not an
+  incremental diff).
+- On V-App exit the VM restores its own UI unconditionally.
+
+This makes interleaving *defined* instead of forbidden-but-unchecked. An explicit
+mode-switch ECALL still fits in the reserved block if a future device needs real
+setup/teardown.
+
+## The native backend is the reference implementation
+
+Neither Speculos nor the v1 native backend enforces any of the above — both are *laxer*
+than hardware (no granularity check, no length cap, any format accepted, geometry
+hardcoded to a 400×672 Gray4 Stax regardless of target), so today the only place an app
+discovers a contract violation is a physical device. v2 inverts that: **the native
+backend is the strictest implementation.**
+
+- Every validation above (granularity, `BAD_LAYOUT`, `TOO_LONG`, UTF-8, formats,
+  reserved bits) enforced exactly as specified.
+- Device profile selectable (e.g. `VAPP_DEVICE=flex|stax|apex_p|nanosplus|nanox`):
+  geometry, native pixel format, granularity, features and input model match the
+  target instead of always-Stax.
+- Quantization and format conversion implemented with the normative formulas, so the
+  PPM/simulator output is the reference rendering (modulo font shapes).
+
+## Migration checklist
+
+- [ ] `common`: renumber ECALLs and enums, error codes, new properties, feature bits
+      (one breaking sweep), plus the ECALL-number uniqueness guard
+- [ ] `vm`: `i32` status returns; all parameter errors soft; granularity/limits served
+      from per-device constants via the new properties; `get_device_property` soft-fail
+- [ ] `vm`: blit `src`/`src_stride` addressing; Gray4↔Mono1 conversion in `blit_band`
+- [ ] `vm`: RGB quantization for fill/text; self-aligning refresh; text clipping
+- [ ] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker
+- [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
+      (delete the `has_page_api()` device table); `Color` named constants over RGB;
+      delete `align4_clip` / `flush_area` alignment duplication
+- [ ] native backend: strict validation + device profiles (`VAPP_DEVICE`)
+- [ ] `apps/test` + `sadik`: exercise every error code, the conversion paths, and the
+      granularity property on all profiles
+- [ ] docs: fold this section into the main text once implemented; update
+      [`docs/ecalls.md`](./ecalls.md) with the error/property conventions
