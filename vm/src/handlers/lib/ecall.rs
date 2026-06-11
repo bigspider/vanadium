@@ -80,7 +80,9 @@ mod device_props {
     target_os = "flex",
     target_os = "apex_p"
 )))]
-compile_error!("Unsupported target OS. Only nanox, nanosplus, stax, and flex are supported.");
+compile_error!(
+    "Unsupported target OS. Only nanox, nanosplus, stax, flex, and apex_p are supported."
+);
 
 use device_props::*;
 
@@ -1779,7 +1781,12 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         while band_y < h as usize {
             let bh = core::cmp::min(BAND_ROWS, h as usize - band_y);
             let in_len = bh * row_stride;
-            let src = buffer_ptr.0 + (band_y * row_stride) as u32;
+            let src = buffer_ptr
+                .0
+                .checked_add((band_y * row_stride) as u32)
+                .ok_or(CommEcallError::InvalidParameters(
+                    "display_blit: buffer address overflow",
+                ))?;
             cpu.get_segment::<E>(src)?
                 .read_buffer(src, &mut band_buf[..in_len])?;
             self.ux_handler.blit_band(
