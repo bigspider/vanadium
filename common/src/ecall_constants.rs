@@ -294,3 +294,57 @@ pub const ECALL_SCHNORR_VERIFY: u32 = 183;
 
 pub const ECALL_SHOW_PAGE: u32 = 192; // Flex / Stax / Apex_P
 pub const ECALL_SHOW_STEP: u32 = 193; // Nano X / Nano S+
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use std::{collections::BTreeMap, format, string::String, vec::Vec};
+
+    // Extracts every `pub const ECALL_*: u32 = <literal>;` from this file's source, so
+    // the test cannot go stale when an ECALL is added. A constant whose value is not a
+    // plain decimal/hex literal fails loudly: rewrite it as a literal (the ECALL table
+    // is an ABI, its numbers should be readable at a glance).
+    fn all_ecall_constants() -> Vec<(String, u32)> {
+        let src = include_str!("ecall_constants.rs");
+        let mut found = Vec::new();
+        for line in src.lines() {
+            let Some(rest) = line.trim().strip_prefix("pub const ECALL_") else {
+                continue;
+            };
+            let (name, rest) = rest.split_once(':').expect("malformed ECALL constant");
+            let value = rest
+                .split_once('=')
+                .expect("malformed ECALL constant")
+                .1
+                .split(';')
+                .next()
+                .unwrap()
+                .trim();
+            let value = match value.strip_prefix("0x") {
+                Some(hex) => u32::from_str_radix(hex, 16),
+                None => value.parse(),
+            }
+            .expect("ECALL value is not a plain integer literal");
+            found.push((format!("ECALL_{}", name.trim()), value));
+        }
+        found
+    }
+
+    /// Two ECALLs once shipped with the same number (display_text_width and
+    /// storage_read, both 20): the dispatcher's second match arm was silently
+    /// unreachable. This test makes any future collision fail in CI.
+    #[test]
+    fn ecall_numbers_are_unique() {
+        let ecalls = all_ecall_constants();
+        // If parsing breaks (e.g. the constants move to another file), fail rather
+        // than silently checking nothing.
+        assert!(ecalls.len() >= 30, "only {} ECALL constants parsed", ecalls.len());
+
+        let mut by_value: BTreeMap<u32, String> = BTreeMap::new();
+        for (name, value) in ecalls {
+            if let Some(previous) = by_value.insert(value, name.clone()) {
+                panic!("ECALL number collision: {previous} and {name} are both {value}");
+            }
+        }
+    }
+}
