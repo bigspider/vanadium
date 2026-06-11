@@ -42,11 +42,63 @@ pub use widgets::{
 
 pub use common::ecall_constants::{Color, Font, PixelFormat};
 
-/// Default UI theme: a white foreground (text, arrows, icons) on a black background. The
-/// two-button flows, the dashboard, and the status icons all paint with these so the whole
-/// SDK shares one look; flip them here to re-theme everything.
-pub const FG: Color = Color::White;
-pub const BG: Color = Color::Black;
+/// The colors the SDK chrome (dashboard, modal flows, status icons) paints with. A V-App is
+/// one device-agnostic binary, so the theme is chosen at runtime from the device's
+/// [`InputModel`] rather than at compile time — see [`theme_for`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Theme {
+    /// Foreground: text, navigation arrows, icon strokes.
+    pub fg: Color,
+    /// Screen background.
+    pub bg: Color,
+    /// Fill of the flat touch buttons ([`button`]).
+    pub button_fill: Color,
+    /// Label drawn on a touch button.
+    pub button_label: Color,
+}
+
+impl Theme {
+    /// True when this is the light (black-on-white) theme.
+    pub fn is_light(&self) -> bool {
+        self.bg == Color::White
+    }
+}
+
+/// White-on-black, used on the two-button Nano devices.
+pub const DARK_THEME: Theme = Theme {
+    fg: Color::White,
+    bg: Color::Black,
+    button_fill: Color::DarkGray,
+    button_label: Color::White,
+};
+
+/// Black-on-white, used on the reflective e-ink panels (Stax / Flex / Apex), where a white
+/// background looks much better on real hardware.
+pub const LIGHT_THEME: Theme = Theme {
+    fg: Color::Black,
+    bg: Color::White,
+    button_fill: Color::LightGray,
+    button_label: Color::Black,
+};
+
+/// The theme for a device: the touch (`Pointer`) devices are the large e-ink panels and get
+/// the light theme; the two-button Nanos keep white-on-black. On the 1bpp Apex panel
+/// (`Pointer` + `Mono1`) a gray button fill collapses to white and would be invisible, so its
+/// buttons are an inverted black chip with a white label instead of the gray-on-white chip
+/// used on the grayscale Stax/Flex panels.
+pub fn theme_for(caps: &Capabilities) -> Theme {
+    match caps.input {
+        InputModel::TwoButton => DARK_THEME,
+        InputModel::Pointer => match caps.pixel_format {
+            PixelFormat::Gray4 => LIGHT_THEME,
+            PixelFormat::Mono1 => Theme {
+                button_fill: Color::Black,
+                button_label: Color::White,
+                ..LIGHT_THEME
+            },
+        },
+    }
+}
 
 /// Horizontal alignment of text within its box.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

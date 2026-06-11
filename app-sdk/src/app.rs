@@ -17,7 +17,7 @@ use crate::{
     executor::block_on,
     ui::{
         button, capabilities, nav_arrows, touch_release, wrap_lines, Align, Capabilities, Font,
-        InputModel, Nav, Rect, Scene, Surface, BG, FG, NAV_ARROW_W,
+        InputModel, Nav, Rect, Scene, Surface, NAV_ARROW_W,
     },
     ux::nav_from_event,
 };
@@ -317,7 +317,7 @@ where
     fn paint(&self, build: impl FnOnce(&Surface, &mut Scene)) {
         let mut surf = Surface::new();
         let mut sc = Scene::new();
-        sc.rect(surf.screen(), BG);
+        sc.rect(surf.screen(), surf.theme().bg);
         build(&surf, &mut sc);
         surf.paint(&sc);
     }
@@ -354,14 +354,15 @@ where
         let info = self.info_btn();
         let quit = self.quit_btn();
         self.paint(|surf, sc| {
+            let th = surf.theme();
             let w = surf.screen().w;
             let lh_l = surf.caps().font(Font::Large).line_height as i32;
             let lh_r = surf.caps().font(Font::Regular).line_height as i32;
             let cy = surf.screen().h / 2 - lh_l;
-            sc.text(Rect::new(0, cy, w, lh_l), name, Font::Large, FG, BG, Align::Center);
-            sc.text(Rect::new(0, cy + lh_l + 4, w, lh_r), desc, Font::Regular, FG, BG, Align::Center);
-            button(sc, info, "Info", Font::Regular);
-            button(sc, quit, "Quit", Font::Bold);
+            sc.text(Rect::new(0, cy, w, lh_l), name, Font::Large, th.fg, th.bg, Align::Center);
+            sc.text(Rect::new(0, cy + lh_l + 4, w, lh_r), desc, Font::Regular, th.fg, th.bg, Align::Center);
+            button(sc, th, info, "Info", Font::Regular);
+            button(sc, th, quit, "Quit", Font::Bold);
         });
     }
 
@@ -371,15 +372,16 @@ where
         let dev = self.developer.clone();
         let back = self.back_btn();
         self.paint(|surf, sc| {
+            let th = surf.theme();
             let m = DASH_MARGIN;
             let w = surf.screen().w - 2 * m;
             let lh_b = surf.caps().font(Font::Bold).line_height as i32;
             let lh_r = surf.caps().font(Font::Regular).line_height as i32;
             let mut y = DASH_MARGIN + 8;
             let field = |sc: &mut Scene, tag: &str, val: &str, y: &mut i32| {
-                sc.text(Rect::new(m, *y, w, lh_b), tag, Font::Bold, FG, BG, Align::Left);
+                sc.text(Rect::new(m, *y, w, lh_b), tag, Font::Bold, th.fg, th.bg, Align::Left);
                 *y += lh_b;
-                sc.text(Rect::new(m, *y, w, lh_r), val, Font::Regular, FG, BG, Align::Left);
+                sc.text(Rect::new(m, *y, w, lh_r), val, Font::Regular, th.fg, th.bg, Align::Left);
                 *y += lh_r + 8;
             };
             field(sc, "V-App name", name, &mut y);
@@ -387,7 +389,7 @@ where
             if let Some(d) = &dev {
                 field(sc, "Developer", d.as_str(), &mut y);
             }
-            button(sc, back, "Back", Font::Bold);
+            button(sc, th, back, "Back", Font::Bold);
         });
     }
 
@@ -420,19 +422,20 @@ where
     // content is inset from those gutters so it never overlaps an arrow.
     fn draw_message_step(&self, title: &str, body: &str, left: bool, right: bool) {
         self.paint(|surf, sc| {
+            let th = surf.theme();
             nav_arrows(surf, sc, left, right);
             let cx = NAV_ARROW_W;
             let cw = surf.screen().w - 2 * NAV_ARROW_W;
             let lh_r = surf.caps().font(Font::Regular).line_height as i32;
             let lh_b = surf.caps().font(Font::Bold).line_height as i32;
             let mut y = 4;
-            sc.text(Rect::new(cx, y, cw, lh_b), title, Font::Bold, FG, BG, Align::Center);
+            sc.text(Rect::new(cx, y, cw, lh_b), title, Font::Bold, th.fg, th.bg, Align::Center);
             y += lh_b + 2;
             for line in wrap_lines(body, cw, |s| surf.measure(Font::Regular, s).w as i32) {
                 if line.is_empty() {
                     continue;
                 }
-                sc.text(Rect::new(cx, y, cw, lh_r), line, Font::Regular, FG, BG, Align::Center);
+                sc.text(Rect::new(cx, y, cw, lh_r), line, Font::Regular, th.fg, th.bg, Align::Center);
                 y += lh_r;
             }
         });

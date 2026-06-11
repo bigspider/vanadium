@@ -13,7 +13,10 @@ use alloc::vec::Vec;
 
 use super::icons::IconBitmap;
 use super::scene::Scene;
-use super::{render_diff, Align, Capabilities, Color, Font, Point, Rect, Renderer, ScreenRenderer, Size, BG, FG};
+use super::{
+    render_diff, theme_for, Align, Capabilities, Font, Point, Rect, Renderer, ScreenRenderer,
+    Size, Theme,
+};
 use crate::ux::{ButtonEvent, Event, TouchState};
 
 /// A drawing surface for modal UX: it owns the renderer and fully repaints a [`Scene`].
@@ -40,6 +43,12 @@ impl Surface {
 
     pub fn caps(&self) -> &Capabilities {
         self.r.caps()
+    }
+
+    /// The color [`Theme`] for this device (derived from its input model). Free — the
+    /// capabilities are already cached.
+    pub fn theme(&self) -> Theme {
+        theme_for(self.caps())
     }
 
     /// The full screen rectangle.
@@ -73,24 +82,26 @@ pub const NAV_ARROW_W: i32 = 10;
 /// dashboard — so the navigation chrome stays consistent across the whole SDK.
 pub fn nav_arrows(surf: &Surface, sc: &mut Scene, left: bool, right: bool) {
     let screen = surf.screen();
+    let th = surf.theme();
     let lh = surf.caps().font(Font::Bold).line_height as i32;
     let y = ((screen.h - lh) / 2).max(0);
     if left {
-        sc.text(Rect::new(0, y, NAV_ARROW_W, lh), "<", Font::Bold, FG, BG, Align::Center);
+        sc.text(Rect::new(0, y, NAV_ARROW_W, lh), "<", Font::Bold, th.fg, th.bg, Align::Center);
     }
     if right {
-        sc.text(Rect::new(screen.w - NAV_ARROW_W, y, NAV_ARROW_W, lh), ">", Font::Bold, FG, BG, Align::Center);
+        sc.text(Rect::new(screen.w - NAV_ARROW_W, y, NAV_ARROW_W, lh), ">", Font::Bold, th.fg, th.bg, Align::Center);
     }
 }
 
-/// Draws a flat button (dark-gray fill + centered white label) into `sc`. Used on the touch
-/// (Gray4) panels; the gray fill keeps it distinct from the black background.
-pub fn button(sc: &mut Scene, area: Rect, label: &str, font: Font) {
+/// Draws a flat button (themed fill + centered label) into `sc`. Used on the touch panels;
+/// the [`Theme::button_fill`] keeps it distinct from the background (a solid black chip on the
+/// 1bpp Apex panel, a light-gray chip on the grayscale Stax/Flex panels).
+pub fn button(sc: &mut Scene, theme: Theme, area: Rect, label: &str, font: Font) {
     if area.is_empty() {
         return;
     }
-    sc.rect(area, Color::DarkGray);
-    sc.text(area, label, font, FG, Color::DarkGray, Align::Center);
+    sc.rect(area, theme.button_fill);
+    sc.text(area, label, font, theme.button_label, theme.button_fill, Align::Center);
 }
 
 /// Adds an icon centered horizontally in `screen`, with its top at `top_y` rounded down to

@@ -20,7 +20,7 @@ pub use common::ux::{
 use crate::ecalls;
 use crate::ui::{
     button, draw_icon_centered, icons, nav_arrows, nav_from_button, touch_release, wrap_lines,
-    Align, Font, InputModel, Nav, Rect, Scene, Surface, BG, FG, NAV_ARROW_W,
+    Align, Font, InputModel, Nav, Rect, Scene, Surface, NAV_ARROW_W,
 };
 
 // Returns true if the device supports the page UX model, false if it supports the step UX model.
@@ -130,6 +130,7 @@ fn text_block(
     font: Font,
     align: Align,
 ) -> i32 {
+    let th = surf.theme();
     let lh = line_h(surf, font);
     let lines = wrap_lines(text, w, |s| surf.measure(font, s).w as i32);
     let mut yy = y;
@@ -138,8 +139,8 @@ fn text_block(
             Rect::new(x, yy, w, lh),
             line,
             font,
-            FG,
-            BG,
+            th.fg,
+            th.bg,
             align,
         );
         yy += lh;
@@ -175,7 +176,8 @@ pub(crate) fn nav_from_event(e: &Event) -> Option<Nav> {
 pub(crate) fn paint_info(icon: Icon, text: &str) {
     let mut surf = Surface::new();
     let screen = surf.screen();
-    let bg = BG;
+    let th = surf.theme();
+    let bg = th.bg;
 
     // The narrow Nano panel can't fit the large icon + Large font, so the two-button devices
     // use the smaller 20×20 icon (selected by pixel format in `icons::bitmap`), a tighter
@@ -187,9 +189,10 @@ pub(crate) fn paint_info(icon: Icon, text: &str) {
     };
 
     let content_w = screen.w - 2 * MARGIN;
-    // Pick the icon art matching the panel's native pixel format; a Gray4 blit on the 1bpp
-    // Nano panel renders as gibberish on real hardware. `None` for icons we have no art for.
-    let bitmap = icons::bitmap(icon, surf.caps().pixel_format);
+    // Pick the icon art matching the panel's native pixel format and theme polarity; a Gray4
+    // blit on a 1bpp panel renders as gibberish on real hardware. `None` for icons we have no
+    // art for.
+    let bitmap = icons::bitmap(icon, surf.caps().pixel_format, th.is_light());
     let icon_h = bitmap.as_ref().map(|b| b.h + gap).unwrap_or(0);
     let text_h = block_height(&surf, content_w, text, font);
     let total = icon_h + text_h;
@@ -222,7 +225,8 @@ pub async fn show_info(icon: Icon, text: &str) {
 pub fn show_spinner(text: &str) {
     let mut surf = Surface::new();
     let screen = surf.screen();
-    let bg = BG;
+    let th = surf.theme();
+    let bg = th.bg;
     let content_w = screen.w - 2 * MARGIN;
 
     let lh = line_h(&surf, Font::Large);
@@ -237,7 +241,7 @@ pub fn show_spinner(text: &str) {
         Rect::new(MARGIN, y, content_w, lh),
         "...",
         Font::Large,
-        FG,
+        th.fg,
         bg,
         Align::Center,
     );
@@ -266,7 +270,8 @@ async fn confirm_reject_pointer(
     reject: &str,
 ) -> bool {
     let screen = surf.screen();
-    let bg = BG;
+    let th = surf.theme();
+    let bg = th.bg;
     let content_w = screen.w - 2 * MARGIN;
 
     // Two buttons side by side along the bottom: reject (left), confirm (right).
@@ -281,8 +286,8 @@ async fn confirm_reject_pointer(
     y = text_block(surf, &mut sc, MARGIN, y, content_w, title, Font::Large, Align::Center);
     y += 8;
     text_block(surf, &mut sc, MARGIN, y, content_w, text, Font::Regular, Align::Center);
-    button(&mut sc, reject_btn, reject, Font::Bold);
-    button(&mut sc, confirm_btn, confirm, Font::Bold);
+    button(&mut sc, th, reject_btn, reject, Font::Bold);
+    button(&mut sc, th, confirm_btn, confirm, Font::Bold);
     surf.paint(&sc);
 
     loop {
@@ -310,7 +315,7 @@ async fn confirm_reject_two_button(
     let mut step = 0usize;
     loop {
         let mut sc = Scene::new();
-        sc.rect(surf.screen(), BG);
+        sc.rect(surf.screen(), surf.theme().bg);
         match step {
             0 => draw_two_button_message(surf, &mut sc, title, text, step, n_steps),
             1 => draw_two_button_choice(surf, &mut sc, confirm, Icon::Confirm, step, n_steps),
@@ -417,7 +422,8 @@ async fn review_pairs_pointer(
     _long_press: bool,
 ) -> bool {
     let screen = surf.screen();
-    let bg = BG;
+    let th = surf.theme();
+    let bg = th.bg;
     let content_w = screen.w - 2 * MARGIN;
 
     let top_h = BTN_H + 8; // top bar: a Cancel button + page indicator
@@ -447,12 +453,12 @@ async fn review_pairs_pointer(
         sc.rect(screen, bg);
 
         // Top bar: Cancel + "page / total".
-        button(&mut sc, cancel_btn, "Cancel", Font::Regular);
+        button(&mut sc, th, cancel_btn, "Cancel", Font::Regular);
         sc.text(
             Rect::new(screen.w - MARGIN - 120, 4, 120, BTN_H),
             format!("{} / {}", page + 1, n_pages),
             Font::Regular,
-            FG,
+            th.fg,
             bg,
             Align::Right,
         );
@@ -477,12 +483,12 @@ async fn review_pairs_pointer(
 
         // Bottom bar: confirm on the last page, otherwise prev/next.
         if page == last {
-            button(&mut sc, confirm_btn, final_button_text, Font::Bold);
+            button(&mut sc, th, confirm_btn, final_button_text, Font::Bold);
         } else {
             if page > 0 {
-                button(&mut sc, prev_btn, "Back", Font::Bold);
+                button(&mut sc, th, prev_btn, "Back", Font::Bold);
             }
-            button(&mut sc, next_btn, "Next", Font::Bold);
+            button(&mut sc, th, next_btn, "Next", Font::Bold);
         }
         surf.paint(&sc);
 
@@ -680,7 +686,7 @@ async fn review_pairs_two_button(
     let mut step = 0usize;
     loop {
         let mut sc = Scene::new();
-        sc.rect(surf.screen(), BG);
+        sc.rect(surf.screen(), surf.theme().bg);
         if step < n_msgs {
             let (title, body) = &msgs[step];
             draw_two_button_message(surf, &mut sc, title, body, step, n_steps);
@@ -753,11 +759,12 @@ fn draw_two_button_choice(
     n_steps: usize,
 ) {
     draw_nav_arrows(surf, sc, step, n_steps);
+    let th = surf.theme();
     let h = surf.screen().h;
     let cw = surf.screen().w - 2 * NAV_ARROW_W;
     let lh = line_h(surf, Font::Bold);
     let y = ((h - lh) / 2).max(2);
-    sc.text(Rect::new(NAV_ARROW_W, y, cw, lh), label, Font::Bold, FG, BG, Align::Center);
+    sc.text(Rect::new(NAV_ARROW_W, y, cw, lh), label, Font::Bold, th.fg, th.bg, Align::Center);
 }
 
 // -----------------------------------------------------------------------------
@@ -773,7 +780,7 @@ pub fn ux_idle() {
     const READY: &str = "Application is ready";
     let mut surf = Surface::new();
     let screen = surf.screen();
-    let bg = BG;
+    let bg = surf.theme().bg;
     let content_w = screen.w - 2 * MARGIN;
     // The Large title font is wider than the narrow two-button Nano panel, so "Application
     // is ready" overflows it (and Speculos rejects the off-screen blit). Fall back to the

@@ -116,12 +116,11 @@ pub const ICON_CROSS_GRAY4: [u8; 800] = [
 ];
 
 /// Photometric negative of a `Gray4` bitmap (each 4-bit level `v` becomes `15 - v`). The art
-/// above is authored dark-on-white; the default UI theme is white-on-black ([`FG`] on [`BG`]),
-/// so the blitted icons are the inverted versions — white check/cross strokes on a black
-/// field that blends into the black background.
+/// above is authored dark-on-white, which is what the light theme blits directly; the dark
+/// (white-on-black) Nano theme blits these inverted versions instead — white check/cross
+/// strokes on a black field that blends into the black background.
 ///
-/// [`FG`]: crate::ui::FG
-/// [`BG`]: crate::ui::BG
+/// [`Theme`]: crate::ui::Theme
 const fn invert_gray4(src: &[u8; 800]) -> [u8; 800] {
     let mut out = [0u8; 800];
     let mut i = 0;
@@ -132,8 +131,8 @@ const fn invert_gray4(src: &[u8; 800]) -> [u8; 800] {
     out
 }
 
-/// The themed (white-on-black) art actually blitted to the screen, derived from the authored
-/// dark-on-white source above.
+/// The dark-theme (white-on-black) Gray4 art, derived from the authored dark-on-white source
+/// above. The light theme blits the authored art (`ICON_*_GRAY4`) directly.
 pub const ICON_CHECK_GRAY4_THEMED: [u8; 800] = invert_gray4(&ICON_CHECK_GRAY4);
 pub const ICON_CROSS_GRAY4_THEMED: [u8; 800] = invert_gray4(&ICON_CROSS_GRAY4);
 
@@ -150,8 +149,9 @@ const MONO1_LEN: usize = PixelFormat::Mono1.buffer_len(MONO_W as usize, MONO_H a
 /// compile time, downscaling 2:1 by averaging each 2×2 source block and thresholding the
 /// result at the mid grayscale level. A bit is *set* for light pixels (average ≥ 8) —
 /// matching the VM's Mono1 convention where a set bit takes the foreground (white) and a
-/// clear bit the background (black). Fed the themed (white-on-black) art, the white strokes
-/// become set bits (drawn white) and the black field clear bits (drawn black).
+/// clear bit the background (black). Fed the dark (white-on-black) art the white strokes
+/// become set bits (drawn white) on a clear black field; fed the authored dark-on-white art
+/// the dark strokes become clear bits (drawn black) on a set white field — the light theme.
 const fn gray4_to_mono1(src: &[u8; 800]) -> [u8; MONO1_LEN] {
     let in_stride = PixelFormat::Gray4.stride(ICON_W as usize);
     let out_stride = PixelFormat::Mono1.stride(MONO_W as usize);
@@ -185,20 +185,31 @@ const fn gray4_to_mono1(src: &[u8; 800]) -> [u8; MONO1_LEN] {
     out
 }
 
+/// Dark-theme (white-on-black) Mono1 art for the Nano panels.
 pub const ICON_CHECK_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CHECK_GRAY4_THEMED);
 pub const ICON_CROSS_MONO1: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CROSS_GRAY4_THEMED);
 
-/// The status bitmap for a semantic [`Icon`], in the device's native `format`, or `None` if
-/// we have no art for it. Callers should pass `caps().pixel_format` so the blit matches the
-/// panel's bit depth (a `Gray4` blit on the 1bpp Nano panel renders as gibberish); the Nano
-/// `Mono1` variant is also the smaller 20×20 art so it leaves room for a text line.
-pub fn bitmap(icon: Icon, format: PixelFormat) -> Option<IconBitmap> {
-    let (pixels, w, h): (&'static [u8], i32, i32) = match (icon, format) {
-        (Icon::Success | Icon::Confirm, PixelFormat::Gray4) => (&ICON_CHECK_GRAY4_THEMED, ICON_W, ICON_H),
-        (Icon::Success | Icon::Confirm, PixelFormat::Mono1) => (&ICON_CHECK_MONO1, MONO_W, MONO_H),
-        (Icon::Failure | Icon::Reject, PixelFormat::Gray4) => (&ICON_CROSS_GRAY4_THEMED, ICON_W, ICON_H),
-        (Icon::Failure | Icon::Reject, PixelFormat::Mono1) => (&ICON_CROSS_MONO1, MONO_W, MONO_H),
-        (Icon::None | Icon::Processing, _) => return None,
+/// Light-theme (black-on-white) Mono1 art for the 1bpp e-ink panel (Apex), derived from the
+/// authored dark-on-white source.
+pub const ICON_CHECK_MONO1_LIGHT: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CHECK_GRAY4);
+pub const ICON_CROSS_MONO1_LIGHT: [u8; MONO1_LEN] = gray4_to_mono1(&ICON_CROSS_GRAY4);
+
+/// The status bitmap for a semantic [`Icon`], in the device's native `format` and theme
+/// polarity (`light` = black strokes on white, else white strokes on black), or `None` if we
+/// have no art for it. Callers should pass `caps().pixel_format` so the blit matches the
+/// panel's bit depth (a `Gray4` blit on a 1bpp panel renders as gibberish); the `Mono1`
+/// variant is also the smaller 20×20 art so it leaves room for a text line.
+pub fn bitmap(icon: Icon, format: PixelFormat, light: bool) -> Option<IconBitmap> {
+    let (pixels, w, h): (&'static [u8], i32, i32) = match (icon, format, light) {
+        (Icon::Success | Icon::Confirm, PixelFormat::Gray4, false) => (&ICON_CHECK_GRAY4_THEMED, ICON_W, ICON_H),
+        (Icon::Success | Icon::Confirm, PixelFormat::Gray4, true) => (&ICON_CHECK_GRAY4, ICON_W, ICON_H),
+        (Icon::Success | Icon::Confirm, PixelFormat::Mono1, false) => (&ICON_CHECK_MONO1, MONO_W, MONO_H),
+        (Icon::Success | Icon::Confirm, PixelFormat::Mono1, true) => (&ICON_CHECK_MONO1_LIGHT, MONO_W, MONO_H),
+        (Icon::Failure | Icon::Reject, PixelFormat::Gray4, false) => (&ICON_CROSS_GRAY4_THEMED, ICON_W, ICON_H),
+        (Icon::Failure | Icon::Reject, PixelFormat::Gray4, true) => (&ICON_CROSS_GRAY4, ICON_W, ICON_H),
+        (Icon::Failure | Icon::Reject, PixelFormat::Mono1, false) => (&ICON_CROSS_MONO1, MONO_W, MONO_H),
+        (Icon::Failure | Icon::Reject, PixelFormat::Mono1, true) => (&ICON_CROSS_MONO1_LIGHT, MONO_W, MONO_H),
+        (Icon::None | Icon::Processing, _, _) => return None,
     };
     Some(IconBitmap { pixels, w, h, format })
 }
