@@ -28,11 +28,13 @@ const TOKEN_TITLE: u8 = 6;
 const TOKEN_TOPRIGHT: u8 = 7;
 
 // The device's native NBGL color depth, used for the area `bpp` of the accelerated
-// draw ops and refreshes. Stax/Flex are 4bpp grayscale; Apex and the Nanos are 1bpp.
-#[cfg(any(target_os = "stax", target_os = "flex"))]
-const NATIVE_BPP: sys::nbgl_bpp_t = sys::NBGL_BPP_4;
-#[cfg(any(target_os = "apex_p", target_os = "nanosplus", target_os = "nanox"))]
-const NATIVE_BPP: sys::nbgl_bpp_t = sys::NBGL_BPP_1;
+// draw ops and refreshes. Derived from the pixel format the guest is told via
+// get_device_property, so the two can never disagree: Stax/Flex are 4bpp grayscale;
+// Apex and the Nanos are 1bpp.
+const NATIVE_BPP: sys::nbgl_bpp_t = match super::NATIVE_PIXEL_FORMAT {
+    common::ecall_constants::PixelFormat::Mono1 => sys::NBGL_BPP_1,
+    common::ecall_constants::PixelFormat::Gray4 => sys::NBGL_BPP_4,
+};
 
 // Maps a semantic [`common::ecall_constants::Font`] to the device's matching NBGL font
 // id. The font sets differ per device (see `nbgl_fonts.h`); these are the regular /

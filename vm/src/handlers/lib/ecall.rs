@@ -84,11 +84,12 @@ compile_error!("Unsupported target OS. Only nanox, nanosplus, stax, and flex are
 
 use device_props::*;
 
-// Native pixel format used by `display_blit` for this device: 1bpp on the small
-// Nano screens, 4bpp grayscale on the larger touch screens.
-#[cfg(any(target_os = "nanox", target_os = "nanosplus"))]
+// Native pixel format used by `display_blit` for this device: 1bpp on the monochrome
+// screens (the Nanos and Apex), 4bpp grayscale on Stax/Flex. The NBGL bpp used by the
+// accelerated draw ops (`NATIVE_BPP` in ux_handler) is derived from this constant.
+#[cfg(any(target_os = "nanox", target_os = "nanosplus", target_os = "apex_p"))]
 const NATIVE_PIXEL_FORMAT: PixelFormat = PixelFormat::Mono1;
-#[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
+#[cfg(any(target_os = "stax", target_os = "flex"))]
 const NATIVE_PIXEL_FORMAT: PixelFormat = PixelFormat::Gray4;
 
 // BIP32 supports up to 255, but we don't want that many, and it would be very slow anyway
