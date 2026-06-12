@@ -2408,6 +2408,130 @@ mod tests {
     }
 
     #[test]
+    fn test_display_refresh_codes() {
+        unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
+        use common::ecall_constants::*;
+
+        let size = display_pack_pair(4, 4);
+        // Mode 0 is malformed; an unknown nonzero mode may exist on a newer VM.
+        assert_eq!(display_refresh(0, size, 0), DISPLAY_ERR_INVALID_ARG);
+        assert_eq!(display_refresh(0, size, 99), DISPLAY_ERR_UNSUPPORTED);
+        // Modes are advisory: every defined one succeeds on every device.
+        for mode in [
+            RefreshMode::FullQuality,
+            RefreshMode::Partial,
+            RefreshMode::Mono,
+            RefreshMode::MonoFast,
+        ] {
+            assert_eq!(display_refresh(0, size, mode as u32), 0);
+        }
+        // The rectangle is advisory too: empty or off-screen rects clip to a no-op
+        // success — refresh never reports OUT_OF_BOUNDS.
+        assert_eq!(display_refresh(0, 0, RefreshMode::FullQuality as u32), 0);
+        assert_eq!(
+            display_refresh(
+                display_pack_pair(0xffff, 0xffff),
+                display_pack_pair(8, 8),
+                RefreshMode::FullQuality as u32,
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn test_display_draw_text_codes() {
+        unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
+        use common::ecall_constants::*;
+
+        let txt = b"hello";
+        let pos = display_pack_pair(0, 0);
+        let size = display_pack_pair(120, 24);
+        let call = |font: u32, color: u32, bg: u32| {
+            display_draw_text(pos, size, txt.as_ptr(), txt.len(), font, color, bg)
+        };
+        // Unknown font: 0 malformed, nonzero probe-able.
+        assert_eq!(call(0, 0, 0xffffff), DISPLAY_ERR_INVALID_ARG);
+        assert_eq!(call(99, 0, 0xffffff), DISPLAY_ERR_UNSUPPORTED);
+        // Reserved color bits, on either color (colors are otherwise never rejected).
+        let font = Font::Regular as u32;
+        assert_eq!(call(font, 0x0100_0000, 0xffffff), DISPLAY_ERR_INVALID_ARG);
+        assert_eq!(call(font, 0, 0x0100_0000), DISPLAY_ERR_INVALID_ARG);
+        // An empty clip box draws nothing, successfully (checked before bounds/text).
+        assert_eq!(
+            display_draw_text(pos, 0, txt.as_ptr(), txt.len(), font, 0, 0xffffff),
+            0
+        );
+        // Box not contained in the screen.
+        assert_eq!(
+            display_draw_text(
+                display_pack_pair(0, DEVICE_PROFILE.height as u16),
+                size,
+                txt.as_ptr(),
+                txt.len(),
+                font,
+                0,
+                0xffffff,
+            ),
+            DISPLAY_ERR_OUT_OF_BOUNDS
+        );
+        // Over the advertised length limit (soft — in v1 this killed the V-App).
+        let long = vec![b'a'; DISPLAY_MAX_TEXT_LEN + 1];
+        assert_eq!(
+            display_draw_text(pos, size, long.as_ptr(), long.len(), font, 0, 0xffffff),
+            DISPLAY_ERR_TOO_LONG
+        );
+        // Bad UTF-8 and interior NUL.
+        assert_eq!(
+            display_draw_text(pos, size, b"\xff\xfe".as_ptr(), 2, font, 0, 0xffffff),
+            DISPLAY_ERR_INVALID_ARG
+        );
+        assert_eq!(
+            display_draw_text(pos, size, b"a\0b".as_ptr(), 3, font, 0, 0xffffff),
+            DISPLAY_ERR_INVALID_ARG
+        );
+        // And the happy path.
+        assert_eq!(call(font, 0x000000, 0xffffff), 0);
+    }
+
+    #[test]
+    fn test_display_text_width_and_font_metrics_codes() {
+        use common::ecall_constants::*;
+
+        let txt = b"abc";
+        assert_eq!(
+            display_text_width(0, txt.as_ptr(), txt.len()),
+            DISPLAY_ERR_INVALID_ARG
+        );
+        assert_eq!(
+            display_text_width(99, txt.as_ptr(), txt.len()),
+            DISPLAY_ERR_UNSUPPORTED
+        );
+        let font = Font::Regular as u32;
+        let long = vec![b'a'; DISPLAY_MAX_TEXT_LEN + 1];
+        assert_eq!(
+            display_text_width(font, long.as_ptr(), long.len()),
+            DISPLAY_ERR_TOO_LONG
+        );
+        assert_eq!(
+            display_text_width(font, b"\xff".as_ptr(), 1),
+            DISPLAY_ERR_INVALID_ARG
+        );
+        assert_eq!(
+            display_text_width(font, b"a\0b".as_ptr(), 3),
+            DISPLAY_ERR_INVALID_ARG
+        );
+        // With the signed convention, 0 unambiguously means an empty string.
+        assert_eq!(display_text_width(font, txt.as_ptr(), 0), 0);
+        assert!(display_text_width(font, txt.as_ptr(), txt.len()) > 0);
+
+        assert_eq!(display_font_metrics(0), DISPLAY_ERR_INVALID_ARG);
+        assert_eq!(display_font_metrics(99), DISPLAY_ERR_UNSUPPORTED);
+        let m = display_font_metrics(font);
+        assert!(m > 0);
+        assert!((m >> 16) > 0 && (m & 0xffff) > 0, "both packed heights nonzero");
+    }
+
+    #[test]
     fn test_slip21() {
         // testcases from https://github.com/satoshilabs/slips/blob/master/slip-0021.md
         const TEST_SEED: [u8; 64] = hex!("c76c4ac4f4e4a00d6b274d5c39c700bb4a7ddc04fbc6f78e85ca75007b5b495f74a9043eeb77bdd53aa6fc3a0e31462270316fa04b8c19114c8798706cd02ac8");

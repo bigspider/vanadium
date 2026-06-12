@@ -115,6 +115,17 @@ async fn test_deviceprop() {
 }
 
 #[tokio::test]
+async fn test_display_codes() {
+    // Runs the display-ABI contract self-test inside the V-App, against the real VM
+    // dispatch path: exact error codes, soft-error behavior (a parameter error must
+    // not abort the V-App), property contract, advisory refresh, format conversion.
+    let mut setup = setup().await;
+
+    let failed = setup.client.display_codes().await.unwrap();
+    assert_eq!(failed, 0, "failed display-ABI checks (bitmask): {failed:#018x}");
+}
+
+#[tokio::test]
 async fn test_draw() {
     // Draws a test pattern with embedded-graphics and blits it to the screen.
     let mut setup = setup().await;

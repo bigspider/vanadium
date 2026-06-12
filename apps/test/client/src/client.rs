@@ -125,6 +125,17 @@ impl TestClient {
         Ok((width, height, ok))
     }
 
+    /// Runs the display-ABI contract self-test inside the V-App (`sdk::abi_probe`).
+    /// Returns a bitmask of failed checks — 0 means the contract holds.
+    pub async fn display_codes(&mut self) -> Result<u64, TestClientError> {
+        let msg = vec![Command::DisplayCodes as u8];
+        let result_raw = self.vapp_transport.send_message(&msg).await?;
+        if result_raw.len() != 8 {
+            return Err("Invalid response length".into());
+        }
+        Ok(u64::from_be_bytes(result_raw[0..8].try_into().unwrap()))
+    }
+
     /// Asks the V-App to render the **accelerated** GUI demo (drawn with the native
     /// command-stream ops). Returns `(width, height, ok)`.
     pub async fn gui_accel(&mut self) -> Result<(u16, u16, bool), TestClientError> {

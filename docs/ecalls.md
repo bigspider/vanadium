@@ -14,6 +14,16 @@ No ECALLs with more than 8 argments (using the stack) are currently defined.
 
 See [ecalls.rs](../app-sdk/src/ecalls.rs) for the interface and documentation of the currently defined ECALLs.
 
+# ABI conventions
+
+The display ECALLs (the dedicated block 40–63; see [graphics.md](./graphics.md)) follow shared conventions, which new ECALLs should adopt:
+
+- **`i32` status returns.** `>= 0` is success (the value's meaning is per-ECALL: 0 for drawing ops, a width or packed metrics for query ops); `< 0` is one of the `DISPLAY_ERR_*` codes in [`ecall_constants.rs`](../common/src/ecall_constants.rs). **Parameter errors are soft** — they are reported in the return value and never abort the V-App; only guest memory-access violations are fatal.
+- **Zero-invalid enums.** In every ABI enum (`PixelFormat`, `Font`, `RefreshMode`, press states, …) the encoding 0 is reserved as invalid. An enum argument of 0 fails with `DISPLAY_ERR_INVALID_ARG` (malformed); any other unknown value fails with `DISPLAY_ERR_UNSUPPORTED`, because it may be a valid encoding on a newer VM — so an app can *probe* for a feature and fall back when it gets `UNSUPPORTED`.
+- **Packed 16-bit pairs.** Positions and sizes are packed as `(x << 16) | y` / `(w << 16) | h` (`display_pack_pair` / `display_unpack_pair` in `common`), keeping argument counts within the 8 registers.
+- **Device properties** (`get_device_property`): querying a property the VM does not know returns 0 — never an error — and every defined property has a nonzero value, so 0 unambiguously means "not supported here" and apps can probe properties added in later ABI revisions. Apps branch on `DEVICE_PROPERTY_FEATURES` bits, never on the device id.
+- **Reserved space must be zero**: unused bytes of an event payload, the top byte of RGB888 colors, etc. — so fields can be added later without new codes (a nonzero reserved field on an old VM would be indistinguishable from garbage).
+
 # Implementation of ECALLs
 
 Each new ECALL requires:

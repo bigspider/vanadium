@@ -17,6 +17,10 @@ extern crate lazy_static;
 use alloc::vec::Vec;
 
 pub mod app;
+// Test support, not app API: lets integration tests assert the display ECALL
+// contract against the real implementation underneath (see the module docs).
+#[doc(hidden)]
+pub mod abi_probe;
 pub mod bignum;
 pub mod comm;
 pub mod curve;

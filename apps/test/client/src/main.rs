@@ -38,6 +38,7 @@ enum CliCommand {
     Ux(u8),
     Draw,
     GuiAccel,
+    DisplayCodes,
     SceneGui,
     DeviceProp(u32),
     Print(String),
@@ -105,6 +106,7 @@ fn parse_command(line: &str) -> Result<CliCommand, String> {
             }
             "draw" => Ok(CliCommand::Draw),
             "fastgui" => Ok(CliCommand::GuiAccel),
+            "displaycodes" => Ok(CliCommand::DisplayCodes),
             "scenegui" => Ok(CliCommand::SceneGui),
             "deviceprop" => {
                 let arg = tokens
@@ -193,6 +195,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 CliCommand::Draw => {
                     let (width, height, ok) = test_client.draw().await?;
                     println!("Drew on a {}x{} screen (ok: {})", width, height, ok);
+                }
+                CliCommand::DisplayCodes => {
+                    let failed = test_client.display_codes().await?;
+                    println!("Display ABI self-test failed checks: 0x{:016x}", failed);
                 }
                 CliCommand::GuiAccel => {
                     let (width, height, ok) = test_client.gui_accel().await?;

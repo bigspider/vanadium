@@ -1,11 +1,12 @@
 # Low-level graphics ECALLs
 
-> Status: **experimental / proof-of-concept**. The blit ECALL, the accelerated
-> command-stream ops, their pixel formats / colors, and the SDK `Canvas` / `Screen`
-> abstractions are all subject to change. A design review of this surface against
-> the goal of freezing the core ECALLs produced a concrete revision — see
-> [Stabilization proposal: display ABI v2](#stabilization-proposal-display-abi-v2)
-> at the end of this document.
+> Status: the display ECALLs implement the **v2 ABI** — the outcome of a design review
+> of the original surface against the goal of freezing the core ECALLs. The normative
+> design rules, conventions and rationale live in
+> [Display ABI v2: design rules and rationale](#display-abi-v2-design-rules-and-rationale)
+> at the end of this document; the sections before it describe the implementation and
+> the SDK abstractions (which remain free to evolve — only the ECALL surface is meant
+> to be stable).
 
 > **Two drawing models.** There are now two ways to put pixels on the screen, with
 > opposite trade-offs:
@@ -297,12 +298,12 @@ display_draw_text(pos, size, text, text_len, font, color, bg) -> i32;
 
 (All display ops return 0 on success and a negative `DISPLAY_ERR_*` code on error, and
 take packed `(x << 16) | y` / `(w << 16) | h` coordinates — see the
-[conventions](#common-conventions) in the v2 proposal, already in effect.)
+[conventions](#common-conventions) of the v2 ABI.)
 
 - `color` / `bg` are **RGB888** values (`0x00RRGGBB`; nonzero top byte →
   `INVALID_ARG`). Any color is rendered, quantized to the nearest the panel's path
   supports per the normative rules (see [Colors are RGB888](#colors-are-rgb888) in
-  the v2 proposal, already in effect): the 4-entry NBGL palette on grayscale panels,
+  the v2 reference): the 4-entry NBGL palette on grayscale panels,
   black/white on monochrome ones. The four named
   [`Color`](../common/src/ecall_constants.rs) constants (`Black` `0x000000`,
   `DarkGray` `0x555555`, `LightGray` `0xAAAAAA`, `White` `0xFFFFFF`) quantize exactly
@@ -448,13 +449,15 @@ graphics, `display_blit` updates an in-memory virtual framebuffer and:
 
 ---
 
-# Stabilization proposal: display ABI v2
+# Display ABI v2: design rules and rationale
 
-> Status: **proposal, not implemented**. This is the outcome of a design review of the
-> v1 surface (everything above) against the requirement that the core ECALLs be generic
-> and stable across future devices. Since nothing is frozen yet, v2 *replaces* v1
-> wholesale in one breaking sweep — no compatibility aliases. Each change below states
-> what it fixes.
+> Status: **implemented** — this section is the normative reference for the v2 display
+> ABI; the sections above describe the implementation and SDK built on it. It is the
+> outcome of a design review of the original (v1) surface against the requirement that
+> the core ECALLs be generic and stable across future devices. Since nothing was frozen
+> yet, v2 *replaced* v1 wholesale in one breaking sweep — no compatibility aliases. Each
+> change below states what it fixes; where this section and code disagree, that is a bug
+> in one of them.
 
 ## Design rules
 
@@ -895,12 +898,14 @@ backend is the strictest implementation.**
       native format)
 - [x] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker;
       `ButtonEvent` as `(button, state)`; zero-invalid press states; reserved-zero payloads
-- [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
-      (delete the `has_page_api()` device table); `Color` named constants over RGB;
-      delete `align4_clip` / `flush_area` alignment duplication
+- [x] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
+      (`has_page_api()` device table deleted); `Color` named constants over RGB;
+      `align4_clip` deleted (`Canvas::flush_area` still aligns its *blit*, as required)
 - [x] native backend: strict validation + device profiles
       (`VAPP_DEVICE=flex|stax|apex_p|nanosplus|nanox`, default flex)
-- [ ] `apps/test` + `sadik`: exercise every error code, the conversion paths, and the
-      granularity property on all profiles
-- [ ] docs: fold this section into the main text once implemented; update
-      [`docs/ecalls.md`](./ecalls.md) with the error/property conventions
+- [x] tests: every error code, the property contract, advisory refresh and format
+      conversion asserted both natively (`ecalls_native` unit tests, green under every
+      `VAPP_DEVICE` profile) and against the real VM dispatch path on Speculos
+      (`sdk::abi_probe` via the test app's `displaycodes` command / `test_display_codes`)
+- [x] docs: this section is now the normative v2 reference;
+      [`docs/ecalls.md`](./ecalls.md) documents the error/property conventions

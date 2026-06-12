@@ -50,6 +50,7 @@ pub fn main() {
             Command::Draw => handle_draw(&msg[1..]),
             Command::GuiAccel => handle_gui_accel(&msg[1..]),
             Command::SceneGui => handle_scene_gui(&msg[1..]),
+            Command::DisplayCodes => sdk::abi_probe::display_abi_probe().to_be_bytes().to_vec(),
             Command::DeviceProp => {
                 if msg.len() != 5 {
                     panic!("Invalid input for device properties");
