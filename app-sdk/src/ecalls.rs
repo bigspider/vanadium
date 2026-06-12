@@ -146,8 +146,17 @@ forward_to_ecall! {
     /// - `format`: A [`common::ecall_constants::PixelFormat`] value describing `buffer`.
     ///
     /// # Returns
-    /// 1 on success, 0 on error (out-of-bounds rectangle, bad length, or
-    /// unsupported format).
+    /// 0 on success; a negative `DISPLAY_ERR_*` code on error
+    /// ([`DISPLAY_ERR_INVALID_ARG`] / [`DISPLAY_ERR_UNSUPPORTED`] for the format,
+    /// [`DISPLAY_ERR_OUT_OF_BOUNDS`], [`DISPLAY_ERR_ALIGNMENT`] for the y/h
+    /// granularity, [`DISPLAY_ERR_BAD_LAYOUT`] for a wrong `buffer_len`).
+    /// Parameter errors never abort the V-App.
+    ///
+    /// [`DISPLAY_ERR_INVALID_ARG`]: common::ecall_constants::DISPLAY_ERR_INVALID_ARG
+    /// [`DISPLAY_ERR_UNSUPPORTED`]: common::ecall_constants::DISPLAY_ERR_UNSUPPORTED
+    /// [`DISPLAY_ERR_OUT_OF_BOUNDS`]: common::ecall_constants::DISPLAY_ERR_OUT_OF_BOUNDS
+    /// [`DISPLAY_ERR_ALIGNMENT`]: common::ecall_constants::DISPLAY_ERR_ALIGNMENT
+    /// [`DISPLAY_ERR_BAD_LAYOUT`]: common::ecall_constants::DISPLAY_ERR_BAD_LAYOUT
     ///
     /// # Safety
     /// - `buffer` must be a valid pointer to at least `buffer_len` bytes of readable memory.
@@ -159,7 +168,7 @@ forward_to_ecall! {
         buffer: *const u8,
         buffer_len: usize,
         format: u32,
-    ) -> u32;
+    ) -> i32;
 
     /// Pushes a previously drawn rectangle (see [`display_blit`] / the accelerated
     /// draw ops) to the physical panel.
@@ -171,12 +180,13 @@ forward_to_ecall! {
     ///   modes are much cheaper for small or monochrome updates.
     ///
     /// # Returns
-    /// 1 on success, 0 on error.
+    /// 0 on success; a negative `DISPLAY_ERR_*` code on error (unknown mode,
+    /// out-of-bounds rectangle). Parameter errors never abort the V-App.
     ///
     /// # Safety
     /// This call does not dereference any pointer, but is kept `unsafe` for
     /// consistency with the other graphics ECALLs.
-    pub unsafe fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> u32;
+    pub unsafe fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> i32;
 
     /// Fills a rectangle with a solid palette color, directly in the OS framebuffer.
     ///
@@ -190,12 +200,13 @@ forward_to_ecall! {
     /// - `color`: A [`common::ecall_constants::Color`] palette value.
     ///
     /// # Returns
-    /// 1 on success, 0 on error (out-of-bounds rectangle or unknown color).
+    /// 0 on success; a negative `DISPLAY_ERR_*` code on error (out-of-bounds
+    /// rectangle, unknown color). Parameter errors never abort the V-App.
     ///
     /// # Safety
     /// This call does not dereference any pointer, but is kept `unsafe` for
     /// consistency with the other graphics ECALLs.
-    pub unsafe fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> u32;
+    pub unsafe fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> i32;
 
     /// Draws a UTF-8 string with an OS font, directly in the framebuffer (no guest-side
     /// font rasterization). Does not refresh the panel.
@@ -209,7 +220,10 @@ forward_to_ecall! {
     ///   `font` a [`common::ecall_constants::Font`].
     ///
     /// # Returns
-    /// 1 on success, 0 on error.
+    /// 0 on success; a negative `DISPLAY_ERR_*` code on error (unknown font or
+    /// color, out-of-bounds rectangle, text longer than
+    /// [`DISPLAY_MAX_TEXT_LEN`](common::ecall_constants::DISPLAY_MAX_TEXT_LEN),
+    /// invalid UTF-8). Parameter errors never abort the V-App.
     ///
     /// # Safety
     /// - `text` must be a valid pointer to at least `text_len` bytes of readable memory.
@@ -221,7 +235,7 @@ forward_to_ecall! {
         text: *const u8,
         text_len: usize,
         color_font: u32,
-    ) -> u32;
+    ) -> i32;
 
     /// Returns the rendered width, in screen pixels, of a UTF-8 string in an OS font,
     /// so a UI can lay out text without rasterizing it in the guest.
@@ -232,11 +246,14 @@ forward_to_ecall! {
     /// - `text_len`: Length of `text` in bytes.
     ///
     /// # Returns
-    /// The text width in pixels (0 on error or for empty text).
+    /// The text width in pixels (`>= 0`); a negative `DISPLAY_ERR_*` code on error
+    /// (unknown font, text longer than
+    /// [`DISPLAY_MAX_TEXT_LEN`](common::ecall_constants::DISPLAY_MAX_TEXT_LEN),
+    /// invalid UTF-8, interior NUL byte).
     ///
     /// # Safety
     /// - `text` must be a valid pointer to at least `text_len` bytes of readable memory.
-    pub unsafe fn display_text_width(font: u32, text: *const u8, text_len: usize) -> u32;
+    pub unsafe fn display_text_width(font: u32, text: *const u8, text_len: usize) -> i32;
 
     /// Returns the vertical metrics of an OS font, packed as `(height << 16) | line_height`
     /// (both in pixels), for laying out text rows.
@@ -244,10 +261,14 @@ forward_to_ecall! {
     /// # Parameters
     /// - `font`: A [`common::ecall_constants::Font`] value.
     ///
+    /// # Returns
+    /// The packed metrics (`>= 0`, heights are at most `0x7FFF` so the value never
+    /// enters the error space); a negative `DISPLAY_ERR_*` code for an unknown font.
+    ///
     /// # Safety
     /// This call does not dereference any pointer, but is kept `unsafe` for consistency
     /// with the other graphics ECALLs.
-    pub unsafe fn display_font_metrics(font: u32) -> u32;
+    pub unsafe fn display_font_metrics(font: u32) -> i32;
 
     /// Reads a 32-byte value from the specified storage slot.
     ///

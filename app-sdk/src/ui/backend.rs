@@ -100,7 +100,10 @@ impl Renderer for ScreenRenderer {
     }
 
     fn measure(&self, font: Font, text: &str) -> Size {
-        let w = unsafe { ecalls::display_text_width(font as u32, text.as_ptr(), text.len()) };
+        // Negative is an error (e.g. text over the ECALL length limit); treat it as
+        // unmeasurable rather than a huge width, so layout degrades gracefully.
+        let w = unsafe { ecalls::display_text_width(font as u32, text.as_ptr(), text.len()) }
+            .max(0) as u32;
         Size::new(w, self.caps.font(font).height as u32)
     }
 

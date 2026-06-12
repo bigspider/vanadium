@@ -77,7 +77,7 @@ impl Screen {
     /// rectangle falls outside the screen.
     pub fn fill_rect(&self, x: u16, y: u16, w: u16, h: u16, color: Color) -> bool {
         unsafe {
-            ecalls::display_fill_rect(x as u32, y as u32, w as u32, h as u32, color as u32) == 1
+            ecalls::display_fill_rect(x as u32, y as u32, w as u32, h as u32, color as u32) == 0
         }
     }
 
@@ -112,7 +112,7 @@ impl Screen {
                 text.as_ptr(),
                 text.len(),
                 color_font,
-            ) == 1
+            ) == 0
         }
     }
 
@@ -127,7 +127,7 @@ impl Screen {
     /// cheap.
     pub fn refresh_area(&self, x: u16, y: u16, w: u16, h: u16, mode: RefreshMode) -> bool {
         unsafe {
-            ecalls::display_refresh(x as u32, y as u32, w as u32, h as u32, mode as u32) == 1
+            ecalls::display_refresh(x as u32, y as u32, w as u32, h as u32, mode as u32) == 0
         }
     }
 

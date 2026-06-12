@@ -200,7 +200,7 @@ impl Canvas {
                     w as u32,
                     h as u32,
                     default_refresh_mode(self.format) as u32,
-                ) == 1
+                ) == 0
             }
     }
 
@@ -221,7 +221,7 @@ impl Canvas {
                     buf.len(),
                     self.format as u32,
                 )
-            } == 1;
+            } == 0;
         }
 
         // General path: repack the sub-rectangle at its own (narrower) stride.
@@ -256,7 +256,7 @@ impl Canvas {
                 out.as_ptr(),
                 out.len(),
                 self.format as u32,
-            ) == 1
+            ) == 0
         }
     }
 
@@ -274,7 +274,7 @@ impl Canvas {
                 buf.as_ptr(),
                 buf.len(),
                 self.format as u32,
-            ) == 1
+            ) == 0
         }
     }
 
@@ -350,7 +350,7 @@ where
             width as u32,
             height as u32,
             default_refresh_mode(format) as u32,
-        ) == 1
+        ) == 0
     }
 }
 

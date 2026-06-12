@@ -96,7 +96,7 @@ display_blit(
     buffer: *const u8,     // pixel data, in guest memory
     buffer_len: usize,     // length of `buffer` in bytes
     format: u32,           // a PixelFormat value describing `buffer`
-) -> u32                   // 1 on success, 0 on error
+) -> i32                   // 0 on success, a negative DISPLAY_ERR_* code on error
 ```
 
 7 arguments fit comfortably in the `a0..a7` ECALL ABI.
@@ -252,9 +252,12 @@ descriptor-shaped, glyphs/icons are native, and only changed regions are refresh
 pub const ECALL_DISPLAY_FILL_RECT: u32 = 42;  // -> nbgl_frontDrawRect
 pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 43;  // -> nbgl_drawText (OS fonts)
 
-display_fill_rect(x, y, w, h, color) -> u32;
-display_draw_text(x, y, w, h, text, text_len, color_font) -> u32;
+display_fill_rect(x, y, w, h, color) -> i32;
+display_draw_text(x, y, w, h, text, text_len, color_font) -> i32;
 ```
+
+(All display ops return 0 on success and a negative `DISPLAY_ERR_*` code on error —
+see the [error model](#common-conventions) in the v2 proposal, already in effect.)
 
 - `color` is a [`Color`](../common/src/ecall_constants.rs) — NBGL's **4-color palette**
   (`Black`, `DarkGray`, `LightGray`, `White`). The vector primitives are 4-color; for

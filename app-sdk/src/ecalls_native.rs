@@ -442,21 +442,34 @@ pub fn display_blit(
     buffer: *const u8,
     buffer_len: usize,
     format: u32,
-) -> u32 {
-    let Some(format) = common::ecall_constants::PixelFormat::from_u32(format) else {
-        return 0;
+) -> i32 {
+    use common::ecall_constants::*;
+
+    let Some(format) = PixelFormat::from_u32(format) else {
+        return display_unknown_enum_err(format);
     };
     let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
 
+    // Empty blit is a no-op success.
+    if w == 0 || h == 0 {
+        return 0;
+    }
+
     let mut screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
 
-    // Bounds + length validation (mirrors what the VM handler must enforce).
+    // Validation mirrors the VM handler exactly — same checks, same order, same
+    // codes — so a contract violation fails here too, not only on a real device.
     if x.saturating_add(w) > screen.width || y.saturating_add(h) > screen.height {
-        return 0;
+        return DISPLAY_ERR_OUT_OF_BOUNDS;
+    }
+    // The virtual screen has no hardware granularity, but the device does (NBGL's
+    // 4-row constraint): enforce it so the violation is caught on the dev machine.
+    if y % 4 != 0 || h % 4 != 0 {
+        return DISPLAY_ERR_ALIGNMENT;
     }
     let stride = format.stride(w);
     if buffer_len != format.buffer_len(w, h) {
-        return 0;
+        return DISPLAY_ERR_BAD_LAYOUT;
     }
 
     // SAFETY: caller guarantees [buffer, buffer+buffer_len) is valid and readable.
@@ -473,19 +486,24 @@ pub fn display_blit(
     // Note: only the virtual framebuffer is updated here. The viewable copy (PPM /
     // simulator window) is produced by `display_refresh`, mirroring the device,
     // where drawing is decoupled from pushing the panel.
-    1
+    0
 }
 
-pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> u32 {
+pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> i32 {
+    use common::ecall_constants::*;
+
     // The refresh mode only affects the physical e-ink panel; on the virtual screen we
     // just validate it and dump the framebuffer regardless.
-    if common::ecall_constants::RefreshMode::from_u32(mode).is_none() {
+    if RefreshMode::from_u32(mode).is_none() {
+        return display_unknown_enum_err(mode);
+    }
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    if w == 0 || h == 0 {
         return 0;
     }
     let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
-    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
     if x.saturating_add(w) > screen.width || y.saturating_add(h) > screen.height {
-        return 0;
+        return DISPLAY_ERR_OUT_OF_BOUNDS;
     }
 
     // Persist a viewable copy of the whole screen.
@@ -495,7 +513,7 @@ pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> u32 {
     #[cfg(feature = "gui")]
     gui::present(&screen);
 
-    1
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -518,20 +536,27 @@ fn fill_screen_rect(x: usize, y: usize, w: usize, h: usize, intensity: u8) {
     }
 }
 
-pub fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> u32 {
-    let Some(color) = common::ecall_constants::Color::from_u32(color) else {
-        return 0;
+pub fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> i32 {
+    use common::ecall_constants::*;
+
+    let Some(color) = Color::from_u32(color) else {
+        // `Color` is transitional (to be replaced by RGB in the v2 ABI): 0 is a
+        // valid encoding (Black), so every unknown value maps to UNSUPPORTED.
+        return DISPLAY_ERR_UNSUPPORTED;
     };
+    if w == 0 || h == 0 {
+        return 0;
+    }
     {
         let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
         if (x as usize).saturating_add(w as usize) > screen.width
             || (y as usize).saturating_add(h as usize) > screen.height
         {
-            return 0;
+            return DISPLAY_ERR_OUT_OF_BOUNDS;
         }
     }
     fill_screen_rect(x as usize, y as usize, w as usize, h as usize, color.intensity());
-    1
+    0
 }
 
 // Maps a device [`Font`](common::ecall_constants::Font) id to an embedded-graphics
@@ -609,15 +634,35 @@ pub fn display_draw_text(
     text: *const u8,
     text_len: usize,
     color_font: u32,
-) -> u32 {
+) -> i32 {
+    use common::ecall_constants::*;
+
     // Packed as (bg << 16) | (fg << 8) | font_role (see Screen::draw_text).
-    let Some(_color) = common::ecall_constants::Color::from_u32((color_font >> 8) & 0xff) else {
-        return 0;
+    // Validation mirrors the VM handler: same checks, same order, same codes.
+    if Font::from_u32(color_font & 0xff).is_none() {
+        return display_unknown_enum_err(color_font & 0xff);
+    }
+    let Some(_color) = Color::from_u32((color_font >> 8) & 0xff) else {
+        return DISPLAY_ERR_UNSUPPORTED;
     };
-    // SAFETY: caller guarantees [text, text+text_len) is valid UTF-8 readable memory.
+    if Color::from_u32((color_font >> 16) & 0xff).is_none() {
+        return DISPLAY_ERR_UNSUPPORTED;
+    }
+    {
+        let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
+        if (x as usize).saturating_add(w as usize) > screen.width
+            || (y as usize).saturating_add(h as usize) > screen.height
+        {
+            return DISPLAY_ERR_OUT_OF_BOUNDS;
+        }
+    }
+    if text_len > DISPLAY_MAX_TEXT_LEN {
+        return DISPLAY_ERR_TOO_LONG;
+    }
+    // SAFETY: caller guarantees [text, text+text_len) is valid readable memory.
     let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
     let Ok(_s) = core::str::from_utf8(bytes) else {
-        return 0;
+        return DISPLAY_ERR_INVALID_ARG;
     };
     #[cfg(feature = "embedded-graphics")]
     {
@@ -642,22 +687,40 @@ pub fn display_draw_text(
     {
         let _ = (x, y, w, h);
     }
-    1
+    0
 }
 
-pub fn display_text_width(font: u32, text: *const u8, text_len: usize) -> u32 {
-    // SAFETY: caller guarantees [text, text+text_len) is valid UTF-8 readable memory.
+pub fn display_text_width(font: u32, text: *const u8, text_len: usize) -> i32 {
+    use common::ecall_constants::*;
+
+    if Font::from_u32(font).is_none() {
+        return display_unknown_enum_err(font);
+    }
+    if text_len > DISPLAY_MAX_TEXT_LEN {
+        return DISPLAY_ERR_TOO_LONG;
+    }
+    // SAFETY: caller guarantees [text, text+text_len) is valid readable memory.
     let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
     let Ok(s) = core::str::from_utf8(bytes) else {
-        return 0;
+        return DISPLAY_ERR_INVALID_ARG;
     };
+    // Interior NULs are rejected like on device (the backing nbgl_getTextWidth
+    // syscall takes a NUL-terminated string).
+    if bytes.contains(&0) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
     let (cw, _, _) = native_font_dims(font);
-    s.chars().count() as u32 * cw
+    (s.chars().count() as u32 * cw) as i32
 }
 
-pub fn display_font_metrics(font: u32) -> u32 {
+pub fn display_font_metrics(font: u32) -> i32 {
+    use common::ecall_constants::*;
+
+    if Font::from_u32(font).is_none() {
+        return display_unknown_enum_err(font);
+    }
     let (_, height, line_height) = native_font_dims(font);
-    (height << 16) | line_height
+    ((height << 16) | line_height) as i32
 }
 
 #[cfg(feature = "gui")]
@@ -1912,10 +1975,10 @@ mod tests {
         // Keep PPM dumps out of the working tree during tests.
         unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
 
-        // 2x1 Gray4 image: left pixel = 0xA, right pixel = 0x5 (stride 1 byte).
-        let buf = [0xA5u8];
-        let ret = display_blit(0, 0, 2, 1, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32);
-        assert_eq!(ret, 1);
+        // 2x4 Gray4 image (stride 1 byte); first row: left pixel = 0xA, right = 0x5.
+        let buf = [0xA5u8, 0x00, 0x00, 0x00];
+        let ret = display_blit(0, 0, 2, 4, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32);
+        assert_eq!(ret, 0);
 
         let screen = VIRTUAL_SCREEN.lock().unwrap();
         assert_eq!(screen.pixels[0], 0xA);
@@ -1926,13 +1989,14 @@ mod tests {
     fn test_display_blit_mono1() {
         unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
 
-        // 8x1 Mono1 image, bits MSB-first: 0b1000_0001 -> pixel 0 and 7 set.
-        let buf = [0b1000_0001u8];
-        let ret = display_blit(0, 10, 8, 1, buf.as_ptr(), buf.len(), PixelFormat::Mono1 as u32);
-        assert_eq!(ret, 1);
+        // 8x4 Mono1 image (stride 1 byte); first row bits MSB-first:
+        // 0b1000_0001 -> pixel 0 and 7 set.
+        let buf = [0b1000_0001u8, 0, 0, 0];
+        let ret = display_blit(0, 12, 8, 4, buf.as_ptr(), buf.len(), PixelFormat::Mono1 as u32);
+        assert_eq!(ret, 0);
 
         let screen = VIRTUAL_SCREEN.lock().unwrap();
-        let row = 10 * screen.width;
+        let row = 12 * screen.width;
         assert_eq!(screen.pixels[row], 15);
         assert_eq!(screen.pixels[row + 1], 0);
         assert_eq!(screen.pixels[row + 7], 15);
@@ -1940,11 +2004,13 @@ mod tests {
 
     #[test]
     fn test_display_blit_rejects_bad_input() {
-        let buf = [0u8; 4];
-        // Wrong buffer length for a 2x1 Gray4 image (expects 1 byte).
+        use common::ecall_constants::*;
+
+        let buf = [0u8; 8];
+        // Wrong buffer length for a 2x4 Gray4 image (expects 4 bytes).
         assert_eq!(
-            display_blit(0, 0, 2, 1, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32),
-            0
+            display_blit(0, 0, 2, 4, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32),
+            DISPLAY_ERR_BAD_LAYOUT
         );
         // Out-of-bounds rectangle.
         assert_eq!(
@@ -1952,15 +2018,32 @@ mod tests {
                 NATIVE_SCREEN_WIDTH as u32,
                 0,
                 2,
-                1,
+                4,
                 buf.as_ptr(),
-                1,
+                4,
                 PixelFormat::Gray4 as u32,
             ),
-            0
+            DISPLAY_ERR_OUT_OF_BOUNDS
         );
-        // Unknown pixel format.
-        assert_eq!(display_blit(0, 0, 2, 1, buf.as_ptr(), 1, 99), 0);
+        // y and height must respect the device's 4-row granularity.
+        assert_eq!(
+            display_blit(0, 2, 2, 4, buf.as_ptr(), 4, PixelFormat::Gray4 as u32),
+            DISPLAY_ERR_ALIGNMENT
+        );
+        assert_eq!(
+            display_blit(0, 0, 2, 2, buf.as_ptr(), 2, PixelFormat::Gray4 as u32),
+            DISPLAY_ERR_ALIGNMENT
+        );
+        // 0 is never a valid enum encoding; other unknown values may come from a
+        // newer ABI revision, so they are distinguishable as UNSUPPORTED.
+        assert_eq!(
+            display_blit(0, 0, 2, 4, buf.as_ptr(), 4, 0),
+            DISPLAY_ERR_INVALID_ARG
+        );
+        assert_eq!(
+            display_blit(0, 0, 2, 4, buf.as_ptr(), 4, 99),
+            DISPLAY_ERR_UNSUPPORTED
+        );
     }
 
     #[test]

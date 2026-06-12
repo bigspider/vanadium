@@ -99,8 +99,7 @@ const MAX_BIP32_PATH: usize = 16;
 
 const MAX_UX_STEP_LEN: usize = 512;
 const MAX_UX_PAGE_LEN: usize = 512;
-// Upper bound on the byte length of a string passed to display_draw_text / _qrcode.
-const MAX_DISPLAY_TEXT_LEN: usize = 512;
+
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
@@ -1729,35 +1728,33 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         buffer_ptr: GuestPointer,
         buffer_len: usize,
         format: u32,
-    ) -> Result<u32, CommEcallError> {
+    ) -> Result<i32, CommEcallError> {
         let Some(format) = PixelFormat::from_u32(format) else {
-            return Ok(0); // unsupported pixel format
+            return Ok(display_unknown_enum_err(format));
         };
+
+        // Empty blit is a no-op success.
+        if w == 0 || h == 0 {
+            return Ok(0);
+        }
 
         // Reject rectangles that fall outside the physical screen.
         if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
             || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
         {
-            return Ok(0);
-        }
-
-        // The advertised length must match the geometry exactly.
-        if buffer_len != format.buffer_len(w as usize, h as usize) {
-            return Ok(0);
-        }
-
-        // Empty blit is a no-op success.
-        if w == 0 || h == 0 {
-            return Ok(1);
+            return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
 
         // NBGL's low-level image draw requires y0 and height to be multiples of 4.
         // The SDK aligns full-screen and partial flushes to satisfy this; reject
         // anything that doesn't so we never feed the driver a malformed area.
         if y % 4 != 0 || h % 4 != 0 {
-            return Err(CommEcallError::InvalidParameters(
-                "display_blit: y and height must be multiples of 4",
-            ));
+            return Ok(DISPLAY_ERR_ALIGNMENT);
+        }
+
+        // The advertised length must match the geometry exactly.
+        if buffer_len != format.buffer_len(w as usize, h as usize) {
+            return Ok(DISPLAY_ERR_BAD_LAYOUT);
         }
 
         // Read the rectangle out of guest memory in horizontal bands and draw one
@@ -1802,7 +1799,7 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         }
         // Note: this only updates the framebuffer; the caller must issue a
         // display_refresh to push the drawn region to the panel.
-        Ok(1)
+        Ok(0)
     }
 
     fn handle_display_refresh<E: fmt::Debug>(
@@ -1813,20 +1810,20 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         w: u32,
         h: u32,
         mode: u32,
-    ) -> Result<u32, CommEcallError> {
+    ) -> Result<i32, CommEcallError> {
         let Some(mode) = RefreshMode::from_u32(mode) else {
-            return Ok(0);
+            return Ok(display_unknown_enum_err(mode));
         };
+        if w == 0 || h == 0 {
+            return Ok(0);
+        }
         if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
             || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
         {
-            return Ok(0);
-        }
-        if w == 0 || h == 0 {
-            return Ok(1);
+            return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
         self.ux_handler.blit_refresh(x, y, w, h, mode)?;
-        Ok(1)
+        Ok(0)
     }
 
     fn handle_display_fill_rect<E: fmt::Debug>(
@@ -1837,20 +1834,22 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         w: u32,
         h: u32,
         color: u32,
-    ) -> Result<u32, CommEcallError> {
+    ) -> Result<i32, CommEcallError> {
         let Some(color) = Color::from_u32(color) else {
-            return Ok(0);
+            // `Color` is transitional (to be replaced by RGB in the v2 ABI): 0 is a
+            // valid encoding (Black), so every unknown value maps to UNSUPPORTED.
+            return Ok(DISPLAY_ERR_UNSUPPORTED);
         };
+        if w == 0 || h == 0 {
+            return Ok(0);
+        }
         if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
             || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
         {
-            return Ok(0);
-        }
-        if w == 0 || h == 0 {
-            return Ok(1);
+            return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
         self.ux_handler.fill_rect(x, y, w, h, color)?;
-        Ok(1)
+        Ok(0)
     }
 
     fn handle_display_draw_text<E: fmt::Debug>(
@@ -1863,30 +1862,34 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         text_ptr: GuestPointer,
         text_len: usize,
         color_font: u32,
-    ) -> Result<u32, CommEcallError> {
+    ) -> Result<i32, CommEcallError> {
         let Some(font) = Font::from_u32(color_font & 0xff) else {
-            return Ok(0);
+            return Ok(display_unknown_enum_err(color_font & 0xff));
         };
         let Some(color) = Color::from_u32((color_font >> 8) & 0xff) else {
-            return Ok(0);
+            return Ok(DISPLAY_ERR_UNSUPPORTED);
         };
-        let bg = Color::from_u32((color_font >> 16) & 0xff).unwrap_or(Color::White);
+        // The background color is validated like the others (v1 silently fell back
+        // to White).
+        let Some(bg) = Color::from_u32((color_font >> 16) & 0xff) else {
+            return Ok(DISPLAY_ERR_UNSUPPORTED);
+        };
         if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
             || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
         {
-            return Ok(0);
+            return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
-        if text_len > MAX_DISPLAY_TEXT_LEN {
-            return Err(CommEcallError::InvalidParameters("display text is too long"));
+        if text_len > DISPLAY_MAX_TEXT_LEN {
+            return Ok(DISPLAY_ERR_TOO_LONG);
         }
         let mut buf = vec![0u8; text_len];
         cpu.get_segment::<E>(text_ptr.0)?
             .read_buffer(text_ptr.0, &mut buf)?;
         if core::str::from_utf8(&buf).is_err() {
-            return Ok(0);
+            return Ok(DISPLAY_ERR_INVALID_ARG);
         }
         self.ux_handler.draw_text(x, y, w, h, &buf, font, color, bg)?;
-        Ok(1)
+        Ok(0)
     }
 
     fn handle_display_text_width<E: fmt::Debug>(
@@ -1895,32 +1898,38 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         font: u32,
         text_ptr: GuestPointer,
         text_len: usize,
-    ) -> Result<u32, CommEcallError> {
+    ) -> Result<i32, CommEcallError> {
         let Some(font) = Font::from_u32(font) else {
-            return Ok(0);
+            return Ok(display_unknown_enum_err(font));
         };
-        if text_len > MAX_DISPLAY_TEXT_LEN {
-            return Err(CommEcallError::InvalidParameters("display text is too long"));
+        if text_len > DISPLAY_MAX_TEXT_LEN {
+            return Ok(DISPLAY_ERR_TOO_LONG);
         }
         let mut buf = vec![0u8; text_len];
         cpu.get_segment::<E>(text_ptr.0)?
             .read_buffer(text_ptr.0, &mut buf)?;
         if core::str::from_utf8(&buf).is_err() {
-            return Ok(0);
+            return Ok(DISPLAY_ERR_INVALID_ARG);
         }
-        Ok(self.ux_handler.text_width(&buf, font)? as u32)
+        // The width must agree with what display_draw_text would render, and the
+        // backing nbgl_getTextWidth needs a NUL-terminated string.
+        if buf.contains(&0) {
+            return Ok(DISPLAY_ERR_INVALID_ARG);
+        }
+        Ok(self.ux_handler.text_width(&buf, font)? as i32)
     }
 
     fn handle_display_font_metrics<E: fmt::Debug>(
         &mut self,
         _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
         font: u32,
-    ) -> Result<u32, CommEcallError> {
+    ) -> Result<i32, CommEcallError> {
         let Some(font) = Font::from_u32(font) else {
-            return Ok(0);
+            return Ok(display_unknown_enum_err(font));
         };
         let (height, line_height) = self.ux_handler.font_metrics(font);
-        Ok(((height as u32) << 16) | line_height as u32)
+        // Heights are u8, so the packed value never enters the (negative) error space.
+        Ok((((height as u32) << 16) | line_height as u32) as i32)
     }
 
     fn handle_get_device_property<E: fmt::Debug>(
@@ -2059,6 +2068,8 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
             ECALL_GET_EVENT => {
                 reg!(A0) = self.handle_get_event::<CommEcallError>(cpu, GPreg!(A0))?;
             }
+            // The display handlers return an i32 status (>= 0 success, < 0 a
+            // DISPLAY_ERR_* code), reinterpreted as the raw a0 register value.
             ECALL_DISPLAY_BLIT => {
                 reg!(A0) = self.handle_display_blit::<CommEcallError>(
                     cpu,
@@ -2069,7 +2080,7 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     GPreg!(A4),
                     reg!(A5) as usize,
                     reg!(A6),
-                )?;
+                )? as u32;
             }
             ECALL_DISPLAY_REFRESH => {
                 reg!(A0) = self.handle_display_refresh::<CommEcallError>(
@@ -2079,7 +2090,7 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     reg!(A2),
                     reg!(A3),
                     reg!(A4),
-                )?;
+                )? as u32;
             }
             ECALL_DISPLAY_FILL_RECT => {
                 reg!(A0) = self.handle_display_fill_rect::<CommEcallError>(
@@ -2089,7 +2100,7 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     reg!(A2),
                     reg!(A3),
                     reg!(A4),
-                )?;
+                )? as u32;
             }
             ECALL_DISPLAY_DRAW_TEXT => {
                 reg!(A0) = self.handle_display_draw_text::<CommEcallError>(
@@ -2101,7 +2112,7 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     GPreg!(A4),
                     reg!(A5) as usize,
                     reg!(A6),
-                )?;
+                )? as u32;
             }
             ECALL_DISPLAY_TEXT_WIDTH => {
                 reg!(A0) = self.handle_display_text_width::<CommEcallError>(
@@ -2109,10 +2120,11 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     reg!(A0),
                     GPreg!(A1),
                     reg!(A2) as usize,
-                )?;
+                )? as u32;
             }
             ECALL_DISPLAY_FONT_METRICS => {
-                reg!(A0) = self.handle_display_font_metrics::<CommEcallError>(cpu, reg!(A0))?;
+                reg!(A0) =
+                    self.handle_display_font_metrics::<CommEcallError>(cpu, reg!(A0))? as u32;
             }
 
             ECALL_STORAGE_READ => {

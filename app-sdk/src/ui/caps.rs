@@ -53,7 +53,9 @@ impl Capabilities {
 }
 
 fn font_metrics(font: Font) -> FontMetrics {
-    let packed = unsafe { ecalls::display_font_metrics(font as u32) };
+    // The fonts queried here are the SDK's own roles, so an error (negative) can only
+    // mean a VM older than this SDK; degrade to zero metrics rather than panic.
+    let packed = unsafe { ecalls::display_font_metrics(font as u32) }.max(0) as u32;
     FontMetrics {
         height: (packed >> 16) as u16,
         line_height: (packed & 0xffff) as u16,

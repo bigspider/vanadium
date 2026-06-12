@@ -31,6 +31,45 @@ pub const ECALL_DISPLAY_FONT_METRICS: u32 = 45;
 // neither BOLOS syscalls nor compiled into the VM, so they are not available yet; only
 // syscall-backed primitives (`nbgl_frontDrawRect`, `nbgl_drawText`) are exposed for now.
 
+// Status codes returned by the display ECALLs: `>= 0` is success (the value's meaning is
+// per-ECALL: 0 for the drawing ops, a width or packed metrics for the query ops), `< 0`
+// is one of the errors below. Parameter errors are always reported this way and never
+// abort the V-App; only guest memory-access violations are fatal.
+//
+// Convention for enum-typed parameters: the value 0 is `DISPLAY_ERR_INVALID_ARG` (0 is
+// never a valid encoding in an ABI enum), while any other unknown value is
+// `DISPLAY_ERR_UNSUPPORTED` — it may be a valid encoding on a newer VM, so an app can
+// probe for a feature and fall back when it gets `UNSUPPORTED`.
+
+// Malformed value: 0 for an enum, bad UTF-8, interior NUL, nonzero reserved bits.
+pub const DISPLAY_ERR_INVALID_ARG: i32 = -1;
+// Well-formed, but not supported by this VM/device (e.g. a newer PixelFormat or Font).
+pub const DISPLAY_ERR_UNSUPPORTED: i32 = -2;
+// The rectangle is not contained in the screen.
+pub const DISPLAY_ERR_OUT_OF_BOUNDS: i32 = -3;
+// stride / buffer_len inconsistent with the requested geometry.
+pub const DISPLAY_ERR_BAD_LAYOUT: i32 = -4;
+// The rectangle violates the device's display granularity (see `display_blit`).
+pub const DISPLAY_ERR_ALIGNMENT: i32 = -5;
+// The text exceeds `DISPLAY_MAX_TEXT_LEN`.
+pub const DISPLAY_ERR_TOO_LONG: i32 = -6;
+
+/// Maximum byte length of a string passed to `display_draw_text` / `display_text_width`.
+/// (To become a queryable device property during the v2 stabilization.)
+pub const DISPLAY_MAX_TEXT_LEN: usize = 512;
+
+/// Maps an unrecognized ABI-enum encoding to the right display error code: 0 is never a
+/// valid encoding ([`DISPLAY_ERR_INVALID_ARG`]); any other unknown value may be valid on
+/// a newer VM ([`DISPLAY_ERR_UNSUPPORTED`]), so an app can probe and fall back. Used by
+/// every implementation of the display ECALLs (VM and native), so the two can't drift.
+pub const fn display_unknown_enum_err(raw: u32) -> i32 {
+    if raw == 0 {
+        DISPLAY_ERR_INVALID_ARG
+    } else {
+        DISPLAY_ERR_UNSUPPORTED
+    }
+}
+
 // Constants used for GET_DEVICE_PROPERTY
 
 // device id (vendor_id: u16, product_id: u16)
