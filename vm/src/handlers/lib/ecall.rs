@@ -1684,31 +1684,45 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
         event_data_ptr: GuestPointer,
     ) -> Result<u32, CommEcallError> {
-        if let Some((event_code, event_data)) = get_last_event() {
-            // transmute the EventData as a [u8]
-            // SAFETY: EventData is #[repr(C)] with size 16 bytes. All event data is initialized
-            // via EventData::default() which zeros all 16 bytes before setting specific fields.
-            // This ensures no uninitialized padding bytes exist when transmuting to &[u8].
-            let event_data_raw = unsafe {
-                core::slice::from_raw_parts(
-                    &event_data as *const _ as *const u8,
-                    core::mem::size_of::<common::ux::EventData>(),
-                )
-            };
+        let (event_code, event_data) = match get_last_event() {
+            Some(ev) => ev,
+            None => {
+                // No stored event: pump seph until the next ticker, stashing any
+                // input decoded along the way on the queue.
+                {
+                    let mut comm = self.comm.borrow_mut();
+                    wait_for_ticker(&mut comm);
+                }
+                match get_last_event() {
+                    // Input arrived while pumping: it is delivered *before* the
+                    // ticker that ended the pump, which is queued behind it — so
+                    // the guest sees events in the order they happened.
+                    Some(ev) => {
+                        store_ticker_event();
+                        ev
+                    }
+                    None => (common::ux::EventCode::Ticker, common::ux::EventData::default()),
+                }
+            }
+        };
 
-            // copy event data to guest pointer
-            cpu.get_segment::<E>(event_data_ptr.0)?
-                .write_buffer(event_data_ptr.0, &event_data_raw)?;
+        // transmute the EventData as a [u8]
+        // SAFETY: EventData is #[repr(C)] with size 16 bytes. All event data is initialized
+        // via EventData::default() which zeros all 16 bytes before setting specific fields.
+        // This ensures no uninitialized padding bytes exist when transmuting to &[u8].
+        let event_data_raw = unsafe {
+            core::slice::from_raw_parts(
+                &event_data as *const _ as *const u8,
+                core::mem::size_of::<common::ux::EventData>(),
+            )
+        };
 
-            Ok(event_code as u32)
-        } else {
-            // if there's no stored event, wait for the next ticker and return it
-            let mut comm = self.comm.borrow_mut();
+        // copy event data to guest pointer (for a Ticker this writes the all-zero
+        // payload, per the reserved-bytes-are-zero contract)
+        cpu.get_segment::<E>(event_data_ptr.0)?
+            .write_buffer(event_data_ptr.0, &event_data_raw)?;
 
-            wait_for_ticker(&mut comm);
-
-            Ok(common::ux::EventCode::Ticker as u32)
-        }
+        Ok(event_code as u32)
     }
 
     fn handle_show_page<E: fmt::Debug>(

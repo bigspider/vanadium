@@ -270,7 +270,7 @@ pub fn print(buffer: *const u8, size: usize) {
 // Parses one line of synthetic input (see `read_synthetic_event`) into an event.
 // Returns `None` for an empty/unrecognized line (the caller then yields a Ticker).
 fn parse_synthetic_event(line: &str) -> Option<(EventCode, EventData)> {
-    use common::ux::{Action, ButtonEvent, TouchEvent, TouchState};
+    use common::ux::{Action, Button, TouchEvent, TouchState};
     let mut it = line.split_whitespace();
     let coords = |it: &mut std::str::SplitWhitespace| -> Option<(u16, u16)> {
         let x = it.next()?.parse().ok()?;
@@ -291,10 +291,10 @@ fn parse_synthetic_event(line: &str) -> Option<(EventCode, EventData)> {
             ed.touch = TouchEvent::new(x, y, TouchState::Released);
             (EventCode::Touch, ed)
         }
-        // Nano buttons.
-        "left" | "l" => button(ButtonEvent::LeftPress),
-        "right" | "r" => button(ButtonEvent::RightPress),
-        "both" | "b" => button(ButtonEvent::BothPress),
+        // Nano buttons (a press; append "r" for the release, e.g. "l r").
+        "left" | "l" => button(Button::Left, &mut it),
+        "right" | "r" => button(Button::Right, &mut it),
+        "both" | "b" => button(Button::Both, &mut it),
         // Quit the current custom-GUI loop.
         "q" | "quit" => {
             let mut ed = EventData::default();
@@ -305,9 +305,14 @@ fn parse_synthetic_event(line: &str) -> Option<(EventCode, EventData)> {
     };
     return Some((code, data));
 
-    fn button(b: common::ux::ButtonEvent) -> (EventCode, EventData) {
+    fn button(b: common::ux::Button, it: &mut std::str::SplitWhitespace) -> (EventCode, EventData) {
+        use common::ux::{ButtonEvent, PressState};
+        let state = match it.next() {
+            Some("r" | "release" | "up") => PressState::Released,
+            _ => PressState::Pressed,
+        };
         let mut ed = EventData::default();
-        ed.button = b;
+        ed.button = ButtonEvent { button: b, state };
         (EventCode::Button, ed)
     }
 }

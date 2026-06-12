@@ -205,14 +205,27 @@ Raw graphics needs raw input, not the semantic `Action`s (Confirm/Reject/…) th
 `raw` field, and `get_event` already has an `Event::Unknown([u8; 16])` path, so no
 new ECALL is needed — only new `EventCode` variants decoded by the SDK:
 
-- touch devices (Stax/Flex/Apex): `Touch { x: u16, y: u16, state: Pressed|Released }`
-- button devices (Nano): `Button { which, state }`
+- touch devices (Stax/Flex/Apex):
+  `TouchEvent { x: u16, y: u16, state: u8 /* 1 = Pressed, 2 = Released */ }`
+- button devices (Nano):
+  `ButtonEvent { button: u8 /* 1 = Left, 2 = Right, 3 = Both */, state: u8 /* as above */ }`
+  — `(button, state)` rather than a combinatorial variant set, so a future device
+  with more buttons adds ids, not variants. Bytes of a payload beyond its declared
+  fields are **reserved and must be zero**, so fields can be appended later.
 
 This is now implemented: the VM decodes raw seph touch/button packets while pumping
 events (`wait_for_ticker`), queues them (`EventQueue` in
-[`ux_handler.rs`](../vm/src/handlers/lib/ecall/ux_handler.rs), depth 4, consecutive
-touches coalesced), and `get_event` delivers them to the guest ahead of tickers from
-its internal FIFO. The SDK surfaces them as `Event::Touch` / `Event::Button`.
+[`ux_handler.rs`](../vm/src/handlers/lib/ecall/ux_handler.rs)), and `get_event`
+delivers them to the guest from its internal FIFO. The queueing contract:
+
+- discrete events (buttons, future kinds) are delivered in order and none is
+  silently lost within a queue window; on overflow (depth 4) the oldest is dropped;
+- touch coalescing merges **Pressed onto Pressed only** (a drag's move-flood) and
+  never across a press/release edge, so a fast tap still delivers its press;
+- input that arrives while `get_event` is pumping for a ticker is returned
+  **before** that ticker, which is queued behind it.
+
+The SDK surfaces them as `Event::Touch` / `Event::Button`.
 
 ## Screen ownership
 
@@ -880,7 +893,8 @@ backend is the strictest implementation.**
       values; nonzero top byte → `INVALID_ARG`)
 - [x] `vm`: Gray4↔Mono1 conversion in `blit_band` (NBGL always receives the panel's
       native format)
-- [ ] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker
+- [x] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker;
+      `ButtonEvent` as `(button, state)`; zero-invalid press states; reserved-zero payloads
 - [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
       (delete the `has_page_api()` device table); `Color` named constants over RGB;
       delete `align4_clip` / `flush_area` alignment duplication

@@ -48,8 +48,10 @@ pub union EventData {
     pub touch: TouchEvent,
     pub button: ButtonEvent,
     // Reserve space for future expansions. Each event's raw data is exactly 16 bytes.
-    // For events that do not define the meaning of the raw data, the value of those bytes is undefined
-    // and could change in future versions.
+    // Bytes of a defined event's payload beyond its declared fields are *reserved and
+    // must be zero* (the VM zeroes the payload before writing the variant) — so a
+    // future revision can add fields, e.g. a timestamp or a touch contact id, without
+    // a new event code: old VMs provably emit zero there.
     pub raw: [u8; 16],
 }
 
@@ -63,15 +65,22 @@ impl Default for EventData {
 #[derive(Debug, Copy, Clone)]
 pub struct TickerEvent {}
 
-/// Whether a [`TouchEvent`] reports the finger touching down or lifting off.
+/// Whether an input event reports a press or a release — used by both
+/// [`TouchEvent`] and [`ButtonEvent`].
+///
+/// Encodings start at 1: 0 is reserved as invalid/unknown in every ABI enum.
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum TouchState {
-    /// The finger was lifted off the screen.
-    Released = 0,
-    /// The finger is touching the screen.
+pub enum PressState {
+    /// The finger is touching the screen / the button is held down.
     Pressed = 1,
+    /// The finger was lifted off / the button was released.
+    Released = 2,
 }
+
+/// The press state of a touch contact (an alias of [`PressState`], kept so touch
+/// call sites read naturally).
+pub type TouchState = PressState;
 
 /// A touch-screen contact: its pixel position and whether it is a press or a release.
 /// On a release, `x`/`y` carry the last touched position.
@@ -98,17 +107,28 @@ impl TouchEvent {
     }
 }
 
-/// A hardware button event on the two-button Nano devices. The buttons are reported as
-/// left, right, or both, distinguishing presses from releases.
+/// Which hardware button a [`ButtonEvent`] reports. `Both` is a distinct id, not a
+/// bitmask: the OS itself synthesizes the two-button chord as its own gesture.
+///
+/// Encodings start at 1: 0 is reserved as invalid/unknown in every ABI enum.
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ButtonEvent {
-    LeftPress = 0,
-    RightPress = 1,
-    BothPress = 2,
-    LeftRelease = 3,
-    RightRelease = 4,
-    BothRelease = 5,
+pub enum Button {
+    Left = 1,
+    Right = 2,
+    Both = 3,
+}
+
+/// A hardware button press/release on the button devices.
+///
+/// `(button, state)` rather than v1's six-variant enum: the same information, but a
+/// future device with more buttons adds [`Button`] ids instead of a combinatorial
+/// set of variants.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct ButtonEvent {
+    pub button: Button,
+    pub state: PressState,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

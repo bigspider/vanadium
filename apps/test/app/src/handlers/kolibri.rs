@@ -44,7 +44,7 @@ use kolibri_embedded_gui::{
 use sdk::executor::block_on;
 use sdk::ux::canvas::device_screen_size;
 use sdk::ux::screen_target::AcceleratedDrawTarget;
-use sdk::ux::{Action, ButtonEvent, Event, TouchEvent, TouchState};
+use sdk::ux::{Action, Button as HwButton, Event, PressState, TouchEvent, TouchState};
 
 /// On the native target, exit the event loop after this many consecutive idle tickers, so
 /// a non-interactive run (no `VAPP_NATIVE_INPUT`) renders the frame(s) and returns.
@@ -185,13 +185,16 @@ pub fn handle_kolibri(_data: &[u8]) -> Vec<u8> {
                     render_frame(&mut target, width, &mut state, interaction);
                     target.refresh();
                 }
+                // This demo reacts on *press* for instant feedback (the release-driven
+                // convention is for flows where a chord must win — see nav_from_button).
                 Event::Button(btn) if !touch_input => {
                     idle_tickers = 0;
-                    match btn {
-                        ButtonEvent::LeftPress => state.counter -= 1,
-                        ButtonEvent::RightPress => state.counter += 1,
-                        ButtonEvent::BothPress => state.done = true,
-                        _ => {}
+                    if btn.state == PressState::Pressed {
+                        match btn.button {
+                            HwButton::Left => state.counter -= 1,
+                            HwButton::Right => state.counter += 1,
+                            HwButton::Both => state.done = true,
+                        }
                     }
                     render_frame(&mut target, width, &mut state, Interaction::None);
                     target.refresh();

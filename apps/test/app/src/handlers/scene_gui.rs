@@ -19,7 +19,7 @@ use sdk::ui::{
     render_diff, Align, Capabilities, Color, Font, InputModel, PixelFormat, Point, Rect, Renderer,
     Scene, ScreenRenderer,
 };
-use sdk::ux::{Action, ButtonEvent, Event, TouchState};
+use sdk::ux::{Action, Button, Event, PressState, TouchState};
 
 /// On native, exit after this many idle tickers so a non-interactive run returns.
 const NATIVE_IDLE_TICKERS: u32 = 5;
@@ -308,15 +308,16 @@ pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
                 // `ux_idle()` draws with the low-level primitives and leaves no NBGL screen
                 // active, so the VM no longer intercepts the buttons into semantic `Action`s.
                 // We act on *release* (the Ledger convention) so a both-buttons press — whose
-                // two contacts are never simultaneous — resolves to a single `BothRelease`
+                // two contacts are never simultaneous — resolves to a single `Both` release
                 // instead of letting whichever button landed first win.
                 Event::Button(btn) if !pointer => {
                     idle = 0;
-                    match btn {
-                        ButtonEvent::LeftRelease => state.counter -= 1,
-                        ButtonEvent::RightRelease => state.counter += 1,
-                        ButtonEvent::BothRelease => state.done = true,
-                        _ => {}
+                    if btn.state == PressState::Released {
+                        match btn.button {
+                            Button::Left => state.counter -= 1,
+                            Button::Right => state.counter += 1,
+                            Button::Both => state.done = true,
+                        }
                     }
                     true
                 }

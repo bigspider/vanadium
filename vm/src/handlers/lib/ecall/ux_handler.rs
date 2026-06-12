@@ -122,12 +122,12 @@ impl EventQueue {
         }
     }
 
-    fn tail_kind(&self) -> Option<common::ux::EventCode> {
+    fn tail(&self) -> Option<&QueuedEvent> {
         if self.len == 0 {
             return None;
         }
         let i = (self.head + self.len - 1) % EVENT_QUEUE_CAP;
-        self.buf[i].as_ref().map(|(code, _)| *code)
+        self.buf[i].as_ref()
     }
 
     fn push(&mut self, ev: QueuedEvent) {
@@ -200,34 +200,57 @@ pub fn store_touch_event(x: u16, y: u16, state: u8) {
 /// and stores it for delivery to the guest's `get_event`.
 #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
 pub fn store_button_event(btn: ledger_device_sdk::buttons::ButtonEvent) {
-    use common::ux::{ButtonEvent as CButton, EventCode, EventData};
+    use common::ux::{Button, ButtonEvent as CButton, EventCode, EventData, PressState};
     use ledger_device_sdk::buttons::ButtonEvent;
-    let mapped = match btn {
-        ButtonEvent::LeftButtonPress => CButton::LeftPress,
-        ButtonEvent::RightButtonPress => CButton::RightPress,
-        ButtonEvent::BothButtonsPress => CButton::BothPress,
-        ButtonEvent::LeftButtonRelease => CButton::LeftRelease,
-        ButtonEvent::RightButtonRelease => CButton::RightRelease,
-        ButtonEvent::BothButtonsRelease => CButton::BothRelease,
+    let (button, state) = match btn {
+        ButtonEvent::LeftButtonPress => (Button::Left, PressState::Pressed),
+        ButtonEvent::RightButtonPress => (Button::Right, PressState::Pressed),
+        ButtonEvent::BothButtonsPress => (Button::Both, PressState::Pressed),
+        ButtonEvent::LeftButtonRelease => (Button::Left, PressState::Released),
+        ButtonEvent::RightButtonRelease => (Button::Right, PressState::Released),
+        ButtonEvent::BothButtonsRelease => (Button::Both, PressState::Released),
     };
     let mut event_data = EventData::default();
-    event_data.button = mapped;
+    event_data.button = CButton { button, state };
     store_new_event(EventCode::Button, event_data);
 }
 
 fn store_new_event(event_code: common::ux::EventCode, event_data: common::ux::EventData) {
+    use common::ux::{EventCode, PressState};
     let q = event_queue();
-    // Coalesce a run of touch events into the latest (a drag streams move events and only the
-    // current finger position matters — and this stops a drag from flooding the queue). Every
-    // other event, in particular each discrete button press and release, is queued in order so
-    // none is ever lost or reordered: the guest sees presses immediately (for instant response)
-    // and a "both buttons" gesture still arrives as its final `BothRelease`.
-    if event_code == common::ux::EventCode::Touch
-        && q.tail_kind() == Some(common::ux::EventCode::Touch)
-    {
-        q.overwrite_tail((event_code, event_data));
-    } else {
-        q.push((event_code, event_data));
+    // Coalesce a drag's move-flood: a new *Pressed* touch overwrites a queued *Pressed*
+    // touch, since mid-drag only the current finger position matters (and this stops a
+    // drag from flooding the queue). Never coalesce across a press/release edge: a fast
+    // tap completed within one ticker window must still deliver Pressed then Released,
+    // so apps can react on the press. Every other event, in particular each discrete
+    // button press and release, is queued in order so none is ever lost or reordered.
+    if event_code == EventCode::Touch {
+        if let Some(&(tail_code, tail_data)) = q.tail() {
+            // SAFETY: an event queued with code Touch holds the union's touch variant.
+            let both_pressed = tail_code == EventCode::Touch && unsafe {
+                tail_data.touch.state == PressState::Pressed
+                    && event_data.touch.state == PressState::Pressed
+            };
+            if both_pressed {
+                q.overwrite_tail((event_code, event_data));
+                return;
+            }
+        }
+    }
+    q.push((event_code, event_data));
+}
+
+/// Queues a Ticker event behind whatever is already waiting, if there is room.
+///
+/// Used by the `get_event` pump when input arrived while waiting for a ticker: the
+/// input is delivered first and the ticker behind it, so events arrive in the order
+/// they happened. When the queue is full the ticker is simply dropped — the next tick
+/// is at most one ticker period away, while evicting input would lose a press or a
+/// release.
+pub fn store_ticker_event() {
+    let q = event_queue();
+    if q.len < EVENT_QUEUE_CAP {
+        q.push((common::ux::EventCode::Ticker, common::ux::EventData::default()));
     }
 }
 

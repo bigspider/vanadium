@@ -13,8 +13,9 @@ use alloc::vec::Vec;
 
 use common::ecall_constants::{DEVICE_PROPERTY_FEATURES, FEATURE_TOUCH};
 pub use common::ux::{
-    Action, ButtonEvent, Deserializable, Event, EventCode, EventData, Icon, NavInfo,
-    NavigationInfo, Page, PageContent, PageContentInfo, TagValue, TouchEvent, TouchState,
+    Action, Button, ButtonEvent, Deserializable, Event, EventCode, EventData, Icon, NavInfo,
+    NavigationInfo, Page, PageContent, PageContentInfo, PressState, TagValue, TouchEvent,
+    TouchState,
 };
 
 use crate::ecalls;

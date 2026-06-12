@@ -190,11 +190,14 @@ pub enum Nav {
 /// pressed mask until full release and emits a single `BothRelease`, so waiting for the
 /// release yields the correct intent regardless of press timing.
 pub fn nav_from_button(b: ButtonEvent) -> Option<Nav> {
-    match b {
-        ButtonEvent::LeftRelease => Some(Nav::Prev),
-        ButtonEvent::RightRelease => Some(Nav::Next),
-        ButtonEvent::BothRelease => Some(Nav::Select),
-        _ => None,
+    use crate::ux::{Button, PressState};
+    if b.state != PressState::Released {
+        return None;
+    }
+    match b.button {
+        Button::Left => Some(Nav::Prev),
+        Button::Right => Some(Nav::Next),
+        Button::Both => Some(Nav::Select),
     }
 }
 
