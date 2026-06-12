@@ -276,9 +276,14 @@ display_draw_text(pos, size, text, text_len, font, color, bg) -> i32;
 take packed `(x << 16) | y` / `(w << 16) | h` coordinates — see the
 [conventions](#common-conventions) in the v2 proposal, already in effect.)
 
-- `color` / `bg` are [`Color`](../common/src/ecall_constants.rs) values — NBGL's
-  **4-color palette** (`Black`, `DarkGray`, `LightGray`, `White`). The vector
-  primitives are 4-color; for full 16-level grayscale use the blit path.
+- `color` / `bg` are **RGB888** values (`0x00RRGGBB`; nonzero top byte →
+  `INVALID_ARG`). Any color is rendered, quantized to the nearest the panel's path
+  supports per the normative rules (see [Colors are RGB888](#colors-are-rgb888) in
+  the v2 proposal, already in effect): the 4-entry NBGL palette on grayscale panels,
+  black/white on monochrome ones. The four named
+  [`Color`](../common/src/ecall_constants.rs) constants (`Black` `0x000000`,
+  `DarkGray` `0x555555`, `LightGray` `0xAAAAAA`, `White` `0xFFFFFF`) quantize exactly
+  everywhere. For full 16-level grayscale use the blit path.
 - `font` is a semantic [`Font`](../common/src/ecall_constants.rs) role (`Regular` /
   `Bold` / `Large`) that the VM maps to the device's matching `nbgl_font_id_e` (the
   font sets differ per device).
@@ -861,8 +866,9 @@ backend is the strictest implementation.**
 - [x] `vm`: self-aligning, clipping refresh with advisory modes (SDK `align4_clip` deleted)
 - [x] `vm`: fill/text packed coordinates, separate font/color/bg args, defined text
       rendering (bg box fill + glyph clipping via `nbgl_getTextMaxLenAndWidth`)
+- [x] `vm`: RGB888 colors with normative quantization (`Color` constants now RGB
+      values; nonzero top byte → `INVALID_ARG`)
 - [ ] `vm`: Gray4↔Mono1 conversion in `blit_band`
-- [ ] `vm`: RGB quantization for fill/text
 - [ ] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker
 - [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
       (delete the `has_page_api()` device table); `Color` named constants over RGB;

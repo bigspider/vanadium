@@ -237,11 +237,17 @@ forward_to_ecall! {
     /// - `pos`: Packed `(x << 16) | y` top-left of the rectangle, in screen pixels
     ///   (see [`display_pack_pair`](common::ecall_constants::display_pack_pair)).
     /// - `size`: Packed `(w << 16) | h` rectangle size, in pixels.
-    /// - `color`: A [`common::ecall_constants::Color`] palette value.
+    /// - `color`: An RGB888 color (`0x00RRGGBB`). Any value is rendered — the device
+    ///   quantizes it to the nearest color its panel supports (normative rules in
+    ///   [`rgb888_luma`](common::ecall_constants::rgb888_luma) and friends); the
+    ///   [`Color`](common::ecall_constants::Color) constants quantize exactly
+    ///   everywhere. A nonzero top byte is [`DISPLAY_ERR_INVALID_ARG`].
     ///
     /// # Returns
     /// 0 on success; a negative `DISPLAY_ERR_*` code on error (out-of-bounds
-    /// rectangle, unknown color). Parameter errors never abort the V-App.
+    /// rectangle, reserved color bits set). Parameter errors never abort the V-App.
+    ///
+    /// [`DISPLAY_ERR_INVALID_ARG`]: common::ecall_constants::DISPLAY_ERR_INVALID_ARG
     ///
     /// # Safety
     /// This call does not dereference any pointer, but is kept `unsafe` for
@@ -267,13 +273,16 @@ forward_to_ecall! {
     /// - `text`: Pointer to the UTF-8 string bytes (no interior NUL).
     /// - `text_len`: Length of `text` in bytes.
     /// - `font`: A [`common::ecall_constants::Font`] role.
-    /// - `color`: A [`common::ecall_constants::Color`] palette value for the glyphs.
-    /// - `bg`: A [`common::ecall_constants::Color`] palette value for the box fill /
-    ///   anti-alias background.
+    /// - `color`: The glyph color, RGB888 (`0x00RRGGBB`). Any value is rendered —
+    ///   quantized to the panel's palette per the normative rules
+    ///   ([`rgb888_luma`](common::ecall_constants::rgb888_luma) and friends); the
+    ///   [`Color`](common::ecall_constants::Color) constants quantize exactly
+    ///   everywhere. A nonzero top byte is invalid.
+    /// - `bg`: The box fill / anti-alias background, RGB888 like `color`.
     ///
     /// # Returns
-    /// 0 on success; a negative `DISPLAY_ERR_*` code on error (unknown font or
-    /// color, out-of-bounds box, text longer than
+    /// 0 on success; a negative `DISPLAY_ERR_*` code on error (unknown font,
+    /// reserved color bits set, out-of-bounds box, text longer than
     /// [`DISPLAY_MAX_TEXT_LEN`](common::ecall_constants::DISPLAY_MAX_TEXT_LEN),
     /// invalid UTF-8 or interior NUL). Parameter errors never abort the V-App.
     ///

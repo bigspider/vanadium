@@ -1907,11 +1907,11 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         size: u32,
         color: u32,
     ) -> Result<i32, CommEcallError> {
-        let Some(color) = Color::from_u32(color) else {
-            // `Color` is transitional (to be replaced by RGB in the v2 ABI): 0 is a
-            // valid encoding (Black), so every unknown value maps to UNSUPPORTED.
-            return Ok(DISPLAY_ERR_UNSUPPORTED);
-        };
+        // Colors are RGB888 and quantized, never rejected — only the reserved top
+        // byte is checked, so future extensions (e.g. an alpha) stay detectable.
+        if !rgb888_is_valid(color) {
+            return Ok(DISPLAY_ERR_INVALID_ARG);
+        }
         let (x, y) = display_unpack_pair(pos);
         let (w, h) = display_unpack_pair(size);
         if w == 0 || h == 0 {
@@ -1939,14 +1939,12 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         let Some(font) = Font::from_u32(font) else {
             return Ok(display_unknown_enum_err(font));
         };
-        let Some(color) = Color::from_u32(color) else {
-            return Ok(DISPLAY_ERR_UNSUPPORTED);
-        };
-        // The background color is validated like the others (v1 silently fell back
-        // to White).
-        let Some(bg) = Color::from_u32(bg) else {
-            return Ok(DISPLAY_ERR_UNSUPPORTED);
-        };
+        // Colors are RGB888 and quantized, never rejected — only the reserved top
+        // byte is checked. Both validated (v1 silently fell back to White for a bad
+        // background).
+        if !rgb888_is_valid(color) || !rgb888_is_valid(bg) {
+            return Ok(DISPLAY_ERR_INVALID_ARG);
+        }
         let (x, y) = display_unpack_pair(pos);
         let (w, h) = display_unpack_pair(size);
         // An empty clip box draws nothing.

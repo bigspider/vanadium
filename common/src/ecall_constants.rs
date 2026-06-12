@@ -231,44 +231,65 @@ impl PixelFormat {
     }
 }
 
-/// A color in NBGL's 4-color palette, used by the accelerated vector drawing
-/// ECALLs (`display_fill_rect`, `display_draw_line`, `display_draw_text`, …).
+/// A named color, as the RGB888 value (`0x00RRGGBB`) the display ECALLs take for
+/// every color argument (`display_fill_rect`, `display_draw_text`, …).
 ///
-/// These ops are drawn natively in the OS framebuffer and only carry a tiny
-/// descriptor across the ECALL boundary, so they are vastly cheaper than rendering
-/// pixels in guest RAM and blitting. The trade-off is that they offer only the four
-/// palette colors; for full 16-level grayscale content (gradients, photos), use the
-/// `display_blit` path with [`PixelFormat::Gray4`].
+/// The ECALLs accept *any* RGB888 value, not just these four: the device renders
+/// the nearest color its panel and drawing path can represent, using the normative
+/// quantization below (see [`rgb888_luma`] and friends) — a color request is
+/// approximated, never rejected. Only a nonzero top byte is an error
+/// ([`DISPLAY_ERR_INVALID_ARG`]): those bits are reserved.
 ///
-/// The numeric values match the Ledger SDK `color_t` palette.
+/// These named constants are the four values that quantize *exactly* to NBGL's
+/// 4-color palette on every current path (`color_t` 0–3, Gray4 0/5/10/15), so UIs
+/// that stick to them render identically on every device. Pixel-exact output
+/// beyond the palette remains the blit path's job, in the device's native
+/// [`PixelFormat`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum Color {
-    Black = 0,
-    DarkGray = 1,
-    LightGray = 2,
-    White = 3,
+    Black = 0x000000,
+    DarkGray = 0x555555,
+    LightGray = 0xAAAAAA,
+    White = 0xFFFFFF,
 }
 
-impl Color {
-    /// Reconstructs a `Color` from its `u32` ECALL encoding.
-    pub const fn from_u32(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Color::Black),
-            1 => Some(Color::DarkGray),
-            2 => Some(Color::LightGray),
-            3 => Some(Color::White),
-            _ => None,
-        }
-    }
+// The normative RGB888 quantization, shared by every implementation of the display
+// ECALLs (VM and native) so a given color renders the same everywhere. The basis is
+// an integer BT.601 luma; each drawing path then keeps as many of its bits as it can
+// represent. The four `Color` constants are exact fixed points of every path
+// (luma 0/85/170/255 → palette 0/1/2/3, Gray4 0/5/10/15, matching `EXPAND_TO_4BPP`).
 
-    /// The equivalent 4bpp grayscale intensity (`0..=15`), matching the SDK's
-    /// `EXPAND_TO_4BPP` mapping (`(c << 2) | c`): Black=0, DarkGray=5, LightGray=10,
-    /// White=15. Used by the native/emulator backend.
-    pub const fn intensity(self) -> u8 {
-        let c = self as u8;
-        (c << 2) | c
-    }
+/// Whether an RGB888 color argument is well-formed: the top byte is reserved and
+/// must be zero (a violation is [`DISPLAY_ERR_INVALID_ARG`], never a quantization).
+pub const fn rgb888_is_valid(rgb: u32) -> bool {
+    rgb >> 24 == 0
+}
+
+/// The normative luma (`0..=255`) of an RGB888 color: an integer BT.601
+/// approximation, `(77*R + 150*G + 29*B + 128) >> 8`. Grays map to themselves.
+pub const fn rgb888_luma(rgb: u32) -> u8 {
+    let r = (rgb >> 16) & 0xff;
+    let g = (rgb >> 8) & 0xff;
+    let b = rgb & 0xff;
+    ((77 * r + 150 * g + 29 * b + 128) >> 8) as u8
+}
+
+/// Quantizes to the 4-entry palette of the accelerated drawing path (NBGL `color_t`:
+/// 0 = black, 1 = dark gray, 2 = light gray, 3 = white).
+pub const fn rgb888_to_palette(rgb: u32) -> u8 {
+    rgb888_luma(rgb) >> 6
+}
+
+/// Quantizes to a Gray4 level (0 = black ..= 15 = white).
+pub const fn rgb888_to_gray4(rgb: u32) -> u8 {
+    rgb888_luma(rgb) >> 4
+}
+
+/// Quantizes to Mono1: `true` = white, `false` = black. (So `0x555555` renders
+/// black and `0xAAAAAA` white on monochrome panels — defined, not driver-dependent.)
+pub const fn rgb888_is_white_mono1(rgb: u32) -> bool {
+    rgb888_luma(rgb) >= 128
 }
 
 /// Panel refresh mode for the `display_refresh` ECALL.
@@ -484,6 +505,32 @@ mod tests {
             found.push((format!("ECALL_{}", name.trim()), value));
         }
         found
+    }
+
+    /// The four named `Color` constants must be exact fixed points of every
+    /// quantization path — that exactness is what makes palette-only UIs render
+    /// identically on every device, so it is part of the ABI contract.
+    #[test]
+    fn canonical_colors_quantize_exactly() {
+        use super::*;
+        let cases = [
+            (Color::Black, 0u8, 0u8, false),
+            (Color::DarkGray, 1, 5, false),
+            (Color::LightGray, 2, 10, true),
+            (Color::White, 3, 15, true),
+        ];
+        for (color, palette, gray4, white_mono) in cases {
+            let rgb = color as u32;
+            assert!(rgb888_is_valid(rgb));
+            assert_eq!(rgb888_to_palette(rgb), palette, "{color:?}");
+            assert_eq!(rgb888_to_gray4(rgb), gray4, "{color:?}");
+            assert_eq!(rgb888_is_white_mono1(rgb), white_mono, "{color:?}");
+            // Grays map to their own channel value in luma.
+            assert_eq!(rgb888_luma(rgb), (rgb & 0xff) as u8, "{color:?}");
+        }
+        // The reserved top byte is the one invalid case.
+        assert!(!rgb888_is_valid(0x0100_0000));
+        assert!(rgb888_is_valid(0x00ff_ffff));
     }
 
     /// Two ECALLs once shipped with the same number (display_text_width and

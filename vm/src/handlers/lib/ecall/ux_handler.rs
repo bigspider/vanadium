@@ -36,6 +36,24 @@ const NATIVE_BPP: sys::nbgl_bpp_t = match super::NATIVE_PIXEL_FORMAT {
     common::ecall_constants::PixelFormat::Gray4 => sys::NBGL_BPP_4,
 };
 
+// Quantizes an RGB888 ECALL color to this panel's `color_t`, per the normative rules
+// in `common`: the 4-entry palette on grayscale panels, black/white on monochrome
+// ones (where the in-between palette entries would otherwise be driver-dependent —
+// this makes e.g. 0x555555 render black and 0xAAAAAA white, everywhere).
+fn quantize_rgb(rgb: u32) -> sys::color_t {
+    use common::ecall_constants::{rgb888_is_white_mono1, rgb888_to_palette, PixelFormat};
+    match super::NATIVE_PIXEL_FORMAT {
+        PixelFormat::Gray4 => rgb888_to_palette(rgb) as sys::color_t,
+        PixelFormat::Mono1 => {
+            if rgb888_is_white_mono1(rgb) {
+                sys::WHITE
+            } else {
+                sys::BLACK
+            }
+        }
+    }
+}
+
 // Maps a semantic [`common::ecall_constants::Font`] to the device's matching NBGL font
 // id. The font sets differ per device (see `nbgl_fonts.h`); these are the regular /
 // semibold / large roles for the current target.
@@ -561,8 +579,9 @@ impl UxHandler {
         Ok(())
     }
 
-    /// Fills a rectangle with a solid palette color, directly in the OS framebuffer
-    /// (no guest framebuffer, no per-pixel transfer). Does not refresh the panel.
+    /// Fills a rectangle with a solid color (RGB888, quantized to the panel's
+    /// palette), directly in the OS framebuffer (no guest framebuffer, no per-pixel
+    /// transfer). Does not refresh the panel.
     ///
     /// `nbgl_frontDrawRect` aligns `y0`/`height` to the hardware vertical alignment
     /// itself (preserving the partial top/bottom rows), so unlike `blit_band` the
@@ -573,7 +592,7 @@ impl UxHandler {
         y: u32,
         w: u32,
         h: u32,
-        color: common::ecall_constants::Color,
+        color: u32,
     ) -> Result<(), CommEcallError> {
         extern "C" {
             fn nbgl_frontDrawRect(area: *const sys::nbgl_area_t);
@@ -584,7 +603,7 @@ impl UxHandler {
             y0: y as i16,
             width: w as u16,
             height: h as u16,
-            backgroundColor: color as u8 as sys::color_t,
+            backgroundColor: quantize_rgb(color),
             bpp: NATIVE_BPP,
         };
 
@@ -609,6 +628,10 @@ impl UxHandler {
     /// the last fitting glyph (`nbgl_getTextMaxLenAndWidth` prefix measurement, the
     /// same metrics `nbgl_getTextWidth` reports for layout).
     ///
+    /// `color` and `bg` are RGB888 values, quantized to the panel's palette per the
+    /// normative rules; NBGL then anti-aliases the glyphs between the two quantized
+    /// colors on grayscale panels.
+    ///
     /// `text` must contain no interior NUL (enforced by the dispatcher; the
     /// measurement syscall takes a NUL-terminated string).
     pub fn draw_text(
@@ -619,8 +642,8 @@ impl UxHandler {
         h: u32,
         text: &[u8],
         font: common::ecall_constants::Font,
-        color: common::ecall_constants::Color,
-        bg: common::ecall_constants::Color,
+        color: u32,
+        bg: u32,
     ) -> Result<(), CommEcallError> {
         extern "C" {
             fn nbgl_drawText(
@@ -673,18 +696,12 @@ impl UxHandler {
             y0: y as i16,
             width: w as u16,
             height: h as u16,
-            backgroundColor: bg as u8 as sys::color_t,
+            backgroundColor: quantize_rgb(bg),
             bpp: NATIVE_BPP,
         };
 
         unsafe {
-            nbgl_drawText(
-                &area,
-                cstr.as_ptr(),
-                fit_len as u16,
-                id,
-                color as u8 as sys::color_t,
-            );
+            nbgl_drawText(&area, cstr.as_ptr(), fit_len as u16, id, quantize_rgb(color));
         }
 
         Ok(())

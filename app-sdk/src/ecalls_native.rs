@@ -547,14 +547,23 @@ fn fill_screen_rect(x: usize, y: usize, w: usize, h: usize, intensity: u8) {
     }
 }
 
+// The Gray4 intensity an accelerated-path RGB888 color renders as: the normative
+// 4-entry palette quantization, expanded like the device's `EXPAND_TO_4BPP`
+// (`(c << 2) | c`). Deliberately 4 levels, not 16 — the accelerated ops are
+// palette-limited on the device, and the virtual screen mirrors that.
+fn accel_rgb_intensity(rgb: u32) -> u8 {
+    let c = common::ecall_constants::rgb888_to_palette(rgb);
+    (c << 2) | c
+}
+
 pub fn display_fill_rect(pos: u32, size: u32, color: u32) -> i32 {
     use common::ecall_constants::*;
 
-    let Some(color) = Color::from_u32(color) else {
-        // `Color` is transitional (to be replaced by RGB in the v2 ABI): 0 is a
-        // valid encoding (Black), so every unknown value maps to UNSUPPORTED.
-        return DISPLAY_ERR_UNSUPPORTED;
-    };
+    // Colors are RGB888 and quantized, never rejected — only the reserved top byte
+    // is checked.
+    if !rgb888_is_valid(color) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
     let (x, y) = display_unpack_pair(pos);
     let (w, h) = display_unpack_pair(size);
     if w == 0 || h == 0 {
@@ -566,7 +575,13 @@ pub fn display_fill_rect(pos: u32, size: u32, color: u32) -> i32 {
             return DISPLAY_ERR_OUT_OF_BOUNDS;
         }
     }
-    fill_screen_rect(x as usize, y as usize, w as usize, h as usize, color.intensity());
+    fill_screen_rect(
+        x as usize,
+        y as usize,
+        w as usize,
+        h as usize,
+        accel_rgb_intensity(color),
+    );
     0
 }
 
@@ -652,12 +667,11 @@ pub fn display_draw_text(
     if Font::from_u32(font).is_none() {
         return display_unknown_enum_err(font);
     }
-    let Some(_color) = Color::from_u32(color) else {
-        return DISPLAY_ERR_UNSUPPORTED;
-    };
-    let Some(bg) = Color::from_u32(bg) else {
-        return DISPLAY_ERR_UNSUPPORTED;
-    };
+    // Colors are RGB888 and quantized, never rejected — only the reserved top byte
+    // is checked.
+    if !rgb888_is_valid(color) || !rgb888_is_valid(bg) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
     let (x, y) = display_unpack_pair(pos);
     let (w, h) = display_unpack_pair(size);
     // An empty clip box draws nothing.
@@ -686,7 +700,13 @@ pub fn display_draw_text(
     // and glyphs are clipped to it — none drawn if the box is shorter than the font,
     // truncated at the last fitting glyph if the text is wider than the box (using the
     // same per-character advance `display_text_width` reports, so the two agree).
-    fill_screen_rect(x as usize, y as usize, w as usize, h as usize, bg.intensity());
+    fill_screen_rect(
+        x as usize,
+        y as usize,
+        w as usize,
+        h as usize,
+        accel_rgb_intensity(bg),
+    );
     let (_cw, fh, _) = native_font_dims(font);
     if fh > h {
         return 0;
@@ -701,7 +721,7 @@ pub fn display_draw_text(
         };
         let fit = (w / _cw) as usize;
         let fitted: std::string::String = _s.chars().take(fit).collect();
-        let style = MonoTextStyle::new(native_mono_font(font), Gray4::new(_color.intensity()));
+        let style = MonoTextStyle::new(native_mono_font(font), Gray4::new(accel_rgb_intensity(color)));
         let mut screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
         let mut target = VsTarget {
             screen: &mut screen,
@@ -2115,6 +2135,28 @@ mod tests {
             assert_eq!(screen.pixels[row * screen.width], 0x3);
             assert_eq!(screen.pixels[row * screen.width + 1], 0xC);
         }
+    }
+
+    #[test]
+    fn test_display_fill_rect_rgb_quantization() {
+        unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
+        use common::ecall_constants::*;
+
+        // An arbitrary (non-canonical) color quantizes to the 4-entry palette and is
+        // never rejected: 0x808080 has luma 128 -> palette 2 -> intensity 10.
+        assert_eq!(
+            display_fill_rect(display_pack_pair(16, 36), display_pack_pair(4, 4), 0x808080),
+            0
+        );
+        {
+            let screen = VIRTUAL_SCREEN.lock().unwrap();
+            assert_eq!(screen.pixels[36 * screen.width + 16], 10);
+        }
+        // The reserved top byte is the one invalid color encoding.
+        assert_eq!(
+            display_fill_rect(display_pack_pair(16, 36), display_pack_pair(4, 4), 0x0100_0000),
+            DISPLAY_ERR_INVALID_ARG
+        );
     }
 
     #[test]
