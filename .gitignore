@@ -26,3 +26,7 @@ venv
 
 # Produced in integration tests with speculos
 **/test.log
+
+# Speculos output captured by the integration test harness
+speculos_stdout.log
+speculos_stderr.log
