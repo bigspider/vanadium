@@ -1824,7 +1824,9 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         // 4 rows. `read_buffer` transparently handles reads crossing page boundaries.
         const BAND_ROWS: usize = 4;
         let band_len = BAND_ROWS * row_span;
-        let out_len = (w as usize * BAND_ROWS * format.bits_per_pixel() + 7) / 8;
+        // The output scratch holds the band in the *panel's* format: blit_band
+        // converts non-native sources during its transpose.
+        let out_len = (w as usize * BAND_ROWS * NATIVE_PIXEL_FORMAT.bits_per_pixel() + 7) / 8;
         // Single allocation split into the input (row-major) and output (column-major)
         // scratch buffers, to avoid heap fragmentation in the tiny VM heap.
         let mut scratch: Vec<u8> = vec![0u8; band_len + out_len];

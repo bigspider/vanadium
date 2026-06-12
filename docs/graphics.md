@@ -165,8 +165,7 @@ pub enum PixelFormat {
 
 (Encodings start at 1 — in every ABI enum, 0 is reserved as invalid/unknown.)
 
-These two formats are chosen to match the native NBGL bit depths exactly and avoid
-conversion cost:
+These two formats match the native NBGL bit depths:
 
 | Device           | Screen      | Native format |
 |------------------|-------------|---------------|
@@ -174,6 +173,17 @@ conversion cost:
 | Stax             | 400×672     | `Gray4`       |
 | Flex             | 480×600     | `Gray4`       |
 | Apex P           | 300×400     | `Mono1`       |
+
+**Every defined format is accepted on every device**: when the source bitmap isn't in
+the panel's native format, the VM converts during the blit's band transpose (which
+already addresses every pixel, so this is effectively free) using the normative rules
+`Mono1 → Gray4`: 0 → 0, 1 → 15; `Gray4 → Mono1`: level >= 8 → white (fixed threshold,
+no dithering). v1 instead forwarded the source format straight to NBGL, which renders
+gibberish when it isn't the panel's own — a Gray4 blit on the 1bpp panels, masked by
+Speculos. Conversion makes blits device-independent (Mono1 art is a universal donor
+format); apps should still prefer the advertised native format, since conversion
+preserves correctness, not fidelity. A format newer than the VM fails soft with
+`DISPLAY_ERR_UNSUPPORTED`, so apps can probe and fall back.
 
 (The Apex P panel is e-ink like Stax/Flex but 1bpp monochrome — see
 `NATIVE_PIXEL_FORMAT` in [`vm/src/handlers/lib/ecall.rs`](../vm/src/handlers/lib/ecall.rs).)
@@ -868,7 +878,8 @@ backend is the strictest implementation.**
       rendering (bg box fill + glyph clipping via `nbgl_getTextMaxLenAndWidth`)
 - [x] `vm`: RGB888 colors with normative quantization (`Color` constants now RGB
       values; nonzero top byte → `INVALID_ARG`)
-- [ ] `vm`: Gray4↔Mono1 conversion in `blit_band`
+- [x] `vm`: Gray4↔Mono1 conversion in `blit_band` (NBGL always receives the panel's
+      native format)
 - [ ] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker
 - [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
       (delete the `has_page_api()` device table); `Color` named constants over RGB;

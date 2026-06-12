@@ -430,7 +430,8 @@ impl UxHandler {
     /// BOLOS syscalls whose C stubs are linked into `ledger_secure_sdk_sys` but are
     /// not exposed by its generated bindings, so we declare them here ourselves using
     /// the bound NBGL types and constants. The same syscalls drive every screen
-    /// model; only the bit depth and color handling differ per `PixelFormat`.
+    /// model; the buffer NBGL receives is always in the panel's native format
+    /// (non-native sources are converted during the transpose).
     pub fn blit_band(
         &mut self,
         x: u32,
@@ -453,13 +454,22 @@ impl UxHandler {
             );
         }
 
+        // The buffer handed to NBGL is always in the panel's *native* format,
+        // whatever `format` the source bitmap uses: the transpose below converts
+        // per the normative rules (Mono1 -> Gray4: 0 -> 0, 1 -> 15; Gray4 -> Mono1:
+        // level >= 8 is white — fixed threshold, no dithering). v1 instead forwarded
+        // the source format straight to the driver, which renders gibberish when it
+        // isn't the panel's own (a Gray4 blit on the 1bpp panels). Conversion is
+        // effectively free here: the transpose already addresses every pixel.
+        //
         // For BPP_4 the color_map is INVALID_COLOR_MAP (no remapping, the grayscale
         // values are used directly). For BPP_1, NBGL interprets the color_map as the
         // *foreground* color (drawn where a bit is set), while bit-clear pixels take
         // the area's backgroundColor (see nbgl_types.h). We pack Mono1 with the bit
         // set for "on"/light pixels, so foreground = WHITE, background = BLACK.
         const INVALID_COLOR_MAP: sys::nbgl_color_map_t = 0;
-        let (bpp, background, color_map) = match format {
+        let native = super::NATIVE_PIXEL_FORMAT;
+        let (bpp, background, color_map) = match native {
             PixelFormat::Gray4 => (sys::NBGL_BPP_4, sys::WHITE, INVALID_COLOR_MAP),
             PixelFormat::Mono1 => (sys::NBGL_BPP_1, sys::BLACK, sys::WHITE as sys::nbgl_color_map_t),
         };
@@ -473,26 +483,38 @@ impl UxHandler {
         // the rightmost column, top to bottom, with no padding between columns; this
         // also yields the correct (un-mirrored) orientation, so no transformation is
         // needed.
-        let out_len = (w * h * format.bits_per_pixel() + 7) / 8;
+        let out_len = (w * h * native.bits_per_pixel() + 7) / 8;
         let out = &mut out[..out_len];
         out.fill(0);
         let mut k = 0usize; // index of the pixel being emitted
         for ox in (0..w).rev() {
             let p = first_px + ox; // pixel position within the source row
             for oy in 0..h {
-                match format {
+                // Decode the source pixel to a Gray4 level (Mono1: 0 -> 0, 1 -> 15).
+                let level = match format {
                     PixelFormat::Gray4 => {
                         let byte = pixels[oy * in_stride + p / 2];
-                        let v = if p % 2 == 0 { byte >> 4 } else { byte & 0x0f };
-                        if k % 2 == 0 {
-                            out[k / 2] |= v << 4;
+                        if p % 2 == 0 {
+                            byte >> 4
                         } else {
-                            out[k / 2] |= v;
+                            byte & 0x0f
                         }
                     }
                     PixelFormat::Mono1 => {
-                        let bit = (pixels[oy * in_stride + p / 8] >> (7 - (p % 8))) & 1;
-                        if bit == 1 {
+                        ((pixels[oy * in_stride + p / 8] >> (7 - (p % 8))) & 1) * 15
+                    }
+                };
+                // Encode in the panel's native format (Gray4 -> Mono1: >= 8 is white).
+                match native {
+                    PixelFormat::Gray4 => {
+                        if k % 2 == 0 {
+                            out[k / 2] |= level << 4;
+                        } else {
+                            out[k / 2] |= level;
+                        }
+                    }
+                    PixelFormat::Mono1 => {
+                        if level >= 8 {
                             out[k / 8] |= 1 << (7 - (k % 8));
                         }
                     }
