@@ -898,7 +898,8 @@ backend is the strictest implementation.**
 - [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
       (delete the `has_page_api()` device table); `Color` named constants over RGB;
       delete `align4_clip` / `flush_area` alignment duplication
-- [ ] native backend: strict validation + device profiles (`VAPP_DEVICE`)
+- [x] native backend: strict validation + device profiles
+      (`VAPP_DEVICE=flex|stax|apex_p|nanosplus|nanox`, default flex)
 - [ ] `apps/test` + `sadik`: exercise every error code, the conversion paths, and the
       granularity property on all profiles
 - [ ] docs: fold this section into the main text once implemented; update

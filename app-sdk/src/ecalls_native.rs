@@ -362,7 +362,7 @@ pub fn get_event(data: *mut EventData) -> u32 {
 }
 
 // ===========================================================================
-// Low-level graphics (display_blit)
+// Device profiles & low-level graphics (display_blit)
 //
 // On the native target the "screen" is a virtual framebuffer kept in memory.
 // Every blit is dumped to a PPM file so it can be inspected without any system
@@ -370,15 +370,78 @@ pub fn get_event(data: *mut EventData) -> u32 {
 // an embedded-graphics-simulator window.
 // ===========================================================================
 
-// Native virtual screen geometry; mirrors a Stax-sized Gray4 display.
-const NATIVE_SCREEN_WIDTH: usize = 400;
-const NATIVE_SCREEN_HEIGHT: usize = 672;
+/// A device the native backend can emulate: drives the geometry, native pixel
+/// format, display granularity and feature bits the V-App observes — so
+/// capability-driven app code takes the same paths it would on the corresponding
+/// hardware, and contract violations are caught on the dev machine for every
+/// target, not just the default one.
+struct DeviceProfile {
+    name: &'static str,
+    width: usize,
+    height: usize,
+    format: common::ecall_constants::PixelFormat,
+    granularity: common::ecall_constants::DisplayGranularity,
+    features: u32,
+}
+
+const DEVICE_PROFILES: &[DeviceProfile] = &{
+    use common::ecall_constants::*;
+    // All current devices share NBGL's 4-row vertical granularity and the full set
+    // of drawing accelerations; they differ in geometry, color depth and input.
+    const GRAN_4ROW: DisplayGranularity = DisplayGranularity { x: 1, y: 4, w: 1, h: 4 };
+    const ACCEL: u32 =
+        FEATURE_ACCEL_RECT | FEATURE_ACCEL_TEXT | FEATURE_PARTIAL_REFRESH | FEATURE_FAST_MONO_REFRESH;
+    [
+        DeviceProfile {
+            name: "flex",
+            width: 480,
+            height: 600,
+            format: PixelFormat::Gray4,
+            granularity: GRAN_4ROW,
+            features: FEATURE_TOUCH | ACCEL,
+        },
+        DeviceProfile {
+            name: "stax",
+            width: 400,
+            height: 672,
+            format: PixelFormat::Gray4,
+            granularity: GRAN_4ROW,
+            features: FEATURE_TOUCH | ACCEL,
+        },
+        DeviceProfile {
+            name: "apex_p",
+            width: 300,
+            height: 400,
+            format: PixelFormat::Mono1,
+            granularity: GRAN_4ROW,
+            features: FEATURE_TOUCH | ACCEL,
+        },
+        DeviceProfile {
+            name: "nanosplus",
+            width: 128,
+            height: 64,
+            format: PixelFormat::Mono1,
+            granularity: GRAN_4ROW,
+            features: FEATURE_BUTTONS | ACCEL,
+        },
+        DeviceProfile {
+            name: "nanox",
+            width: 128,
+            height: 64,
+            format: PixelFormat::Mono1,
+            granularity: GRAN_4ROW,
+            features: FEATURE_BUTTONS | ACCEL,
+        },
+    ]
+};
 
 struct VirtualScreen {
     width: usize,
     height: usize,
     // One byte per pixel, intensity 0..=15 (Gray4). Simpler than packing; the
-    // native target is not memory-constrained.
+    // native target is not memory-constrained. On a Mono1 profile only 0 and 15
+    // are ever written (see `panel_intensity`), so the PPM shows what the panel
+    // would.
     pixels: Vec<u8>,
 }
 
@@ -405,8 +468,40 @@ impl VirtualScreen {
 }
 
 lazy_static! {
+    // The emulated device, selected once with the `VAPP_DEVICE` env var
+    // (flex | stax | apex_p | nanosplus | nanox); flex — the tooling's default
+    // target — when unset. An unknown name fails loudly rather than silently
+    // emulating the wrong device.
+    static ref DEVICE_PROFILE: &'static DeviceProfile = {
+        let name = std::env::var("VAPP_DEVICE").unwrap_or_else(|_| "flex".into());
+        DEVICE_PROFILES
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "unknown VAPP_DEVICE '{}' (expected one of: flex, stax, apex_p, nanosplus, nanox)",
+                    name
+                )
+            })
+    };
     static ref VIRTUAL_SCREEN: Mutex<VirtualScreen> =
-        Mutex::new(VirtualScreen::new(NATIVE_SCREEN_WIDTH, NATIVE_SCREEN_HEIGHT));
+        Mutex::new(VirtualScreen::new(DEVICE_PROFILE.width, DEVICE_PROFILE.height));
+}
+
+// What the profile's panel makes of a decoded source intensity: a monochrome panel
+// renders the normative Gray4 -> Mono1 threshold (level >= 8 is white), mirroring
+// the VM's blit conversion.
+fn panel_intensity(intensity: u8) -> u8 {
+    match DEVICE_PROFILE.format {
+        common::ecall_constants::PixelFormat::Gray4 => intensity,
+        common::ecall_constants::PixelFormat::Mono1 => {
+            if intensity >= 8 {
+                15
+            } else {
+                0
+            }
+        }
+    }
 }
 
 // Decodes the intensity (0..=15) of pixel (col, row) within a blit buffer.
@@ -471,9 +566,14 @@ pub fn display_blit(
     if x + w > screen.width || y + h > screen.height {
         return DISPLAY_ERR_OUT_OF_BOUNDS;
     }
-    // The virtual screen has no hardware granularity, but the device does (NBGL's
-    // 4-row constraint): enforce it so the violation is caught on the dev machine.
-    if y % 4 != 0 || h % 4 != 0 {
+    // The virtual screen has no hardware granularity, but the emulated device does:
+    // enforce the profile's constraint so the violation is caught on the dev machine.
+    let g = DEVICE_PROFILE.granularity;
+    if x % g.x as usize != 0
+        || y % g.y as usize != 0
+        || w % g.w as usize != 0
+        || h % g.h as usize != 0
+    {
         return DISPLAY_ERR_ALIGNMENT;
     }
     // Every byte the source rectangle addresses must lie within `buffer_len`: each
@@ -494,7 +594,8 @@ pub fn display_blit(
     for row in 0..h {
         for col in 0..w {
             let intensity = decode_pixel(data, format, src_stride, src_y + row, src_x + col);
-            screen.pixels[(y + row) * screen_width + (x + col)] = intensity;
+            // Non-native formats convert to what the panel can show, like the VM.
+            screen.pixels[(y + row) * screen_width + (x + col)] = panel_intensity(intensity);
         }
     }
 
@@ -552,13 +653,26 @@ fn fill_screen_rect(x: usize, y: usize, w: usize, h: usize, intensity: u8) {
     }
 }
 
-// The Gray4 intensity an accelerated-path RGB888 color renders as: the normative
-// 4-entry palette quantization, expanded like the device's `EXPAND_TO_4BPP`
-// (`(c << 2) | c`). Deliberately 4 levels, not 16 — the accelerated ops are
-// palette-limited on the device, and the virtual screen mirrors that.
+// The intensity an accelerated-path RGB888 color renders as on the profile's panel:
+// the normative 4-entry palette quantization, expanded like the device's
+// `EXPAND_TO_4BPP` (`(c << 2) | c`), on grayscale panels — deliberately 4 levels,
+// not 16, because the accelerated ops are palette-limited on the device — and the
+// normative black/white split on monochrome ones, like the VM's quantize_rgb.
 fn accel_rgb_intensity(rgb: u32) -> u8 {
-    let c = common::ecall_constants::rgb888_to_palette(rgb);
-    (c << 2) | c
+    use common::ecall_constants::{rgb888_is_white_mono1, rgb888_to_palette, PixelFormat};
+    match DEVICE_PROFILE.format {
+        PixelFormat::Gray4 => {
+            let c = rgb888_to_palette(rgb);
+            (c << 2) | c
+        }
+        PixelFormat::Mono1 => {
+            if rgb888_is_white_mono1(rgb) {
+                15
+            } else {
+                0
+            }
+        }
+    }
 }
 
 pub fn display_fill_rect(pos: u32, size: u32, color: u32) -> i32 {
@@ -938,37 +1052,52 @@ pub fn show_page(page_desc: *const u8, page_desc_len: usize) -> u32 {
     1
 }
 
-pub fn show_step(_step_desc: *const u8, _step_desc_len: usize) -> u32 {
-    panic!("The native target implements the page UX model, not the step UX model.");
+pub fn show_step(step_desc: *const u8, step_desc_len: usize) -> u32 {
+    // The step UX model is what apps use on the button-device profiles
+    // (VAPP_DEVICE=nanosplus|nanox); render it to the console like show_page does.
+    // No interaction is synthesized: drive the flow with VAPP_NATIVE_INPUT if needed.
+    let step_desc_slice = unsafe { std::slice::from_raw_parts(step_desc, step_desc_len) };
+    let Ok(step) = common::ux::Step::deserialize_full(step_desc_slice) else {
+        return 0;
+    };
+
+    println!("\n+=========================================+");
+    match step {
+        common::ux::Step::TextSubtext { text, subtext, .. } => {
+            println!("{}", text);
+            println!("{}", subtext);
+        }
+        common::ux::Step::CenteredInfo { text, subtext, icon, .. } => {
+            if !matches!(icon, common::ux::Icon::None) {
+                println!("[{:?}]", icon);
+            }
+            if let Some(text) = text {
+                println!("{}", text);
+            }
+            if let Some(subtext) = subtext {
+                println!("{}", subtext);
+            }
+        }
+    }
+    epilogue_noaction();
+
+    1
 }
 
 pub fn get_device_property(property: u32) -> u32 {
     use common::ecall_constants::*;
+    // Everything device-shaped comes from the selected `VAPP_DEVICE` profile, so a
+    // capability-driven app exercises the same branches it would on that hardware.
+    let p = &*DEVICE_PROFILE;
     match property {
         // The native pseudo-device: vendor 0xFFFF, product 1 (nonzero per the
-        // property contract — 0 always means "unsupported property").
+        // property contract — 0 always means "unsupported property"). Deliberately
+        // not per-profile: apps must branch on features, never on the id.
         DEVICE_PROPERTY_ID => 0xFFFF_0001,
-        DEVICE_PROPERTY_SCREEN_SIZE => {
-            ((NATIVE_SCREEN_WIDTH as u32) << 16) | (NATIVE_SCREEN_HEIGHT as u32)
-        }
-        // The virtual screen mirrors a touch-screen (Stax-like) device.
-        DEVICE_PROPERTY_FEATURES => {
-            FEATURE_TOUCH
-                | FEATURE_ACCEL_RECT
-                | FEATURE_ACCEL_TEXT
-                | FEATURE_PARTIAL_REFRESH
-                | FEATURE_FAST_MONO_REFRESH
-        }
-        DEVICE_PROPERTY_PIXEL_FORMAT => PixelFormat::Gray4 as u32,
-        // Same 4-row granularity as the NBGL devices (display_blit enforces it here
-        // too, so violations are caught on the dev machine).
-        DEVICE_PROPERTY_DISPLAY_GRANULARITY => DisplayGranularity {
-            x: 1,
-            y: 4,
-            w: 1,
-            h: 4,
-        }
-        .pack(),
+        DEVICE_PROPERTY_SCREEN_SIZE => ((p.width as u32) << 16) | (p.height as u32),
+        DEVICE_PROPERTY_FEATURES => p.features,
+        DEVICE_PROPERTY_PIXEL_FORMAT => p.format as u32,
+        DEVICE_PROPERTY_DISPLAY_GRANULARITY => p.granularity.pack(),
         DEVICE_PROPERTY_MAX_TEXT_LEN => DISPLAY_MAX_TEXT_LEN as u32,
         DEVICE_PROPERTY_ABI_REVISION => VANADIUM_ABI_REVISION,
         // Unknown properties return 0 (the probing contract), never panic.
@@ -2058,8 +2187,8 @@ mod tests {
         assert_eq!(ret, 0);
 
         let screen = VIRTUAL_SCREEN.lock().unwrap();
-        assert_eq!(screen.pixels[0], 0xA);
-        assert_eq!(screen.pixels[1], 0x5);
+        assert_eq!(screen.pixels[0], panel_intensity(0xA));
+        assert_eq!(screen.pixels[1], panel_intensity(0x5));
     }
 
     #[test]
@@ -2113,8 +2242,8 @@ mod tests {
         let screen = VIRTUAL_SCREEN.lock().unwrap();
         for row in 0..4 {
             let base = (20 + row) * screen.width + 8;
-            assert_eq!(screen.pixels[base], (4 * row + 1) as u8);
-            assert_eq!(screen.pixels[base + 1], (4 * row + 2) as u8);
+            assert_eq!(screen.pixels[base], panel_intensity((4 * row + 1) as u8));
+            assert_eq!(screen.pixels[base + 1], panel_intensity((4 * row + 2) as u8));
         }
     }
 
@@ -2137,9 +2266,40 @@ mod tests {
 
         let screen = VIRTUAL_SCREEN.lock().unwrap();
         for row in 28..32 {
-            assert_eq!(screen.pixels[row * screen.width], 0x3);
-            assert_eq!(screen.pixels[row * screen.width + 1], 0xC);
+            assert_eq!(screen.pixels[row * screen.width], panel_intensity(0x3));
+            assert_eq!(screen.pixels[row * screen.width + 1], panel_intensity(0xC));
         }
+    }
+
+    // The properties served to the app must agree with the profile actually driving
+    // the virtual screen, whatever VAPP_DEVICE selected — they are two views of the
+    // same device.
+    #[test]
+    fn test_device_properties_match_profile() {
+        use common::ecall_constants::*;
+        let p = &*DEVICE_PROFILE;
+        assert_eq!(
+            get_device_property(DEVICE_PROPERTY_SCREEN_SIZE),
+            ((p.width as u32) << 16) | p.height as u32
+        );
+        {
+            let screen = VIRTUAL_SCREEN.lock().unwrap();
+            assert_eq!((screen.width, screen.height), (p.width, p.height));
+        }
+        assert_eq!(get_device_property(DEVICE_PROPERTY_FEATURES), p.features);
+        // Exactly one input model is advertised.
+        assert_eq!(
+            (p.features & FEATURE_TOUCH != 0) as u32 + (p.features & FEATURE_BUTTONS != 0) as u32,
+            1
+        );
+        assert_eq!(
+            PixelFormat::from_u32(get_device_property(DEVICE_PROPERTY_PIXEL_FORMAT)),
+            Some(p.format)
+        );
+        assert_eq!(
+            DisplayGranularity::from_u32(get_device_property(DEVICE_PROPERTY_DISPLAY_GRANULARITY)),
+            Some(p.granularity)
+        );
     }
 
     #[test]
@@ -2155,7 +2315,7 @@ mod tests {
         );
         {
             let screen = VIRTUAL_SCREEN.lock().unwrap();
-            assert_eq!(screen.pixels[36 * screen.width + 16], 10);
+            assert_eq!(screen.pixels[36 * screen.width + 16], accel_rgb_intensity(0x808080));
         }
         // The reserved top byte is the one invalid color encoding.
         assert_eq!(
@@ -2200,7 +2360,7 @@ mod tests {
         // Out-of-bounds rectangle.
         assert_eq!(
             display_blit(
-                display_pack_pair(NATIVE_SCREEN_WIDTH as u16, 0),
+                display_pack_pair(DEVICE_PROFILE.width as u16, 0),
                 display_pack_pair(2, 4),
                 buf.as_ptr(),
                 4,
