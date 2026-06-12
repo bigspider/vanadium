@@ -1,5 +1,4 @@
-//! Interactive demo built on the semantic [`ui`](sdk::ui) layer, as an alternative to the
-//! pixel-rasterized `kolibri` demo.
+//! Interactive demo built on the semantic [`ui`](sdk::ui) layer.
 //!
 //! It draws the same kind of screen (title, a counter flanked by −/+ buttons, a checkbox,
 //! a slider and a Done button), but:

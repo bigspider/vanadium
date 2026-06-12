@@ -11,7 +11,7 @@ pub enum Command {
     ShowUxScreen = 0x80,
     DeviceProp = 0x81,
     Draw = 0x82,
-    Kolibri = 0x83,
+    // 0x83 was the retired kolibri-embedded-gui demo.
     GuiAccel = 0x84,
     SceneGui = 0x85,
     Print = 0xfd,
@@ -32,7 +32,6 @@ impl TryFrom<u8> for Command {
             0x80 => Ok(Command::ShowUxScreen),
             0x81 => Ok(Command::DeviceProp),
             0x82 => Ok(Command::Draw),
-            0x83 => Ok(Command::Kolibri),
             0x84 => Ok(Command::GuiAccel),
             0x85 => Ok(Command::SceneGui),
             0xfd => Ok(Command::Print),

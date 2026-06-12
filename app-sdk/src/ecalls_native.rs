@@ -318,7 +318,7 @@ fn parse_synthetic_event(line: &str) -> Option<(EventCode, EventData)> {
 }
 
 // Reads one synthetic event from stdin, for interactively driving custom GUIs (e.g. the
-// kolibri demo) on the native target. EOF is reported as a Quit action so a loop can end.
+// scene-UI demo) on the native target. EOF is reported as a Quit action so a loop can end.
 fn read_synthetic_event() -> Option<(EventCode, EventData)> {
     use std::io::BufRead;
     let mut line = String::new();

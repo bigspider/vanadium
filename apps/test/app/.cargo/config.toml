@@ -7,7 +7,7 @@ rustflags = [
 
 [env]
 RUST_TEST_THREADS = "1"
-# A full-screen Gray4 Canvas on Flex/Stax (~144 KB) lives in the V-App heap, used by the
-# `kolibri` GUI demo (which draws via embedded-graphics into a full framebuffer). Raise
-# the default 64 KB heap so it fits (mirrors apps/sadik). Read by app-sdk/build.rs.
+# Headroom for graphics demos that allocate a full-screen Gray4 Canvas on Flex/Stax
+# (~144 KB) in the V-App heap; the default is 64 KB (mirrors apps/sadik). Read by
+# app-sdk/build.rs.
 VAPP_HEAP_SIZE = "262144"

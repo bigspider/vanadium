@@ -48,7 +48,6 @@ pub fn main() {
             Command::CountPrimes => handle_count_primes(&msg[1..]),
             Command::ShowUxScreen => handle_show_ux_screen(&msg[1..]),
             Command::Draw => handle_draw(&msg[1..]),
-            Command::Kolibri => handle_kolibri(&msg[1..]),
             Command::GuiAccel => handle_gui_accel(&msg[1..]),
             Command::SceneGui => handle_scene_gui(&msg[1..]),
             Command::DeviceProp => {

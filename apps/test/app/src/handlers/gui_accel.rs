@@ -1,11 +1,10 @@
-//! An **accelerated** counterpart to the kolibri demo (`handlers/kolibri.rs`).
-//!
-//! It draws the same kind of UI — title, a button row with a counter, a checkbox and a
-//! slider — but entirely through the command-stream [`Screen`] ops (`fill_rect` /
+//! An **accelerated** GUI demo: title, a button row with a counter, a checkbox and a
+//! slider, drawn entirely through the command-stream [`Screen`] ops (`fill_rect` /
 //! `draw_text`), which the VM forwards to the device's native NBGL drawing. There is **no
 //! guest framebuffer and no per-pixel rasterization**, so it renders in a single panel
-//! refresh — orders of magnitude faster than the kolibri version, which rasterizes every
-//! widget pixel in the interpreter and blits a full 144 KB framebuffer.
+//! refresh — orders of magnitude faster than rasterizing every widget pixel in the
+//! interpreter and blitting a full 144 KB framebuffer (the approach of the retired
+//! `kolibri-embedded-gui` demo, which this replaced).
 //!
 //! This is essentially how NBGL itself draws (coarse native fills + native fonts), so the
 //! performance is in the same ballpark. The trade-off is the 4-color palette and
