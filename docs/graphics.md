@@ -116,6 +116,9 @@ so violating them renders fine in the emulator and wrong on a real device):
 
 - **`y0` and `height` must be multiples of 4.** So bands are aligned to 4 rows; the
   SDK expands `flush_area` regions to satisfy this. The smallest band is 4 rows.
+  This granularity is advertised via `DEVICE_PROPERTY_DISPLAY_GRANULARITY` (the VM
+  enforces the same constant it advertises, failing with `DISPLAY_ERR_ALIGNMENT`),
+  so UI code aligns to the queried value rather than a hardcoded 4.
 - **`nbgl_frontDrawImage` consumes its buffer column-major**, right-to-left,
   top-to-bottom, packed MSB-first (high nibble first for 4bpp) with no per-column
   padding (see `nbgl_driver_drawImage`). The SDK framebuffer is row-major, so the VM

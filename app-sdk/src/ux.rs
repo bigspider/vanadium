@@ -11,7 +11,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use common::ecall_constants::DEVICE_PROPERTY_ID;
+use common::ecall_constants::{DEVICE_PROPERTY_FEATURES, FEATURE_TOUCH};
 pub use common::ux::{
     Action, ButtonEvent, Deserializable, Event, EventCode, EventData, Icon, NavInfo,
     NavigationInfo, Page, PageContent, PageContentInfo, TagValue, TouchEvent, TouchState,
@@ -23,18 +23,12 @@ use crate::ui::{
     Align, Font, InputModel, Nav, Rect, Scene, Surface, NAV_ARROW_W,
 };
 
-// Returns true if the device supports the page UX model, false if it supports the step UX model.
-// It panics for unsupported devices
+// Returns true if the device supports the page UX model, false if it supports the step
+// UX model. The page model is tied to touch input, so this is the FEATURE_TOUCH bit —
+// a capability query that keeps working on devices that don't exist yet (the previous
+// implementation matched on a device-id table and panicked on unknown ids).
 pub fn has_page_api() -> bool {
-    match ecalls::get_device_property(DEVICE_PROPERTY_ID) {
-        0 => true,           // native target
-        0x2c970060 => true,  // Ledger Stax
-        0x2c970070 => true,  // Ledger Flex
-        0x2c970080 => true,  // Ledger Apex_p
-        0x2c970040 => false, // Ledger Nano X
-        0x2c970050 => false, // Ledger Nano S+
-        _ => panic!("Unsupported device"),
-    }
+    ecalls::get_device_property(DEVICE_PROPERTY_FEATURES) & FEATURE_TOUCH != 0
 }
 
 /// Blocks until an event is received, then returns it.

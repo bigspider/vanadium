@@ -205,6 +205,13 @@ mod tests {
                     input: InputModel::Pointer,
                     partial_refresh: true,
                     fast_mono_refresh: true,
+                    granularity: common::ecall_constants::DisplayGranularity {
+                        x: 1,
+                        y: 4,
+                        w: 1,
+                        h: 4,
+                    },
+                    max_text_len: common::ecall_constants::DISPLAY_MAX_TEXT_LEN,
                     fonts: [fm, fm, fm],
                 },
                 fills: Vec::new(),

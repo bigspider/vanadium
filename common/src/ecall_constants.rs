@@ -70,16 +70,99 @@ pub const fn display_unknown_enum_err(raw: u32) -> i32 {
     }
 }
 
-// Constants used for GET_DEVICE_PROPERTY
+// Constants used for GET_DEVICE_PROPERTY.
+//
+// Contract: querying a property the VM does not know returns 0 (never an error or an
+// abort), and every defined property has a nonzero value — so 0 unambiguously means
+// "not supported here", and apps can probe properties added in later ABI revisions.
 
 // device id (vendor_id: u16, product_id: u16)
 pub const DEVICE_PROPERTY_ID: u32 = 0x01;
 // (screen_width: u16, screen_height: u16)
 pub const DEVICE_PROPERTY_SCREEN_SIZE: u32 = 0x02;
-// bitmask of device features (to be defined)
+// bitmask of device features (`FEATURE_*` bits below)
 pub const DEVICE_PROPERTY_FEATURES: u32 = 0x03;
 // the device's native pixel format (a `PixelFormat` value), used for `display_blit`
 pub const DEVICE_PROPERTY_PIXEL_FORMAT: u32 = 0x04;
+// the display's alignment constraints, packed per `DisplayGranularity`
+pub const DEVICE_PROPERTY_DISPLAY_GRANULARITY: u32 = 0x05;
+// maximum byte length accepted by display_draw_text / display_text_width
+pub const DEVICE_PROPERTY_MAX_TEXT_LEN: u32 = 0x06;
+// the ECALL ABI revision the VM implements (`VANADIUM_ABI_REVISION` of its tree)
+pub const DEVICE_PROPERTY_ABI_REVISION: u32 = 0x07;
+
+// Bits of DEVICE_PROPERTY_FEATURES. Feature bits — not the device id — are how an app
+// decides what it can use: branching on the id list breaks on every new device.
+
+// Absolute-pointer input: get_event may deliver Touch events.
+pub const FEATURE_TOUCH: u32 = 1 << 0;
+// Hardware buttons: get_event may deliver Button events.
+pub const FEATURE_BUTTONS: u32 = 1 << 1;
+// display_fill_rect is implemented (accelerated, OS-side fills).
+pub const FEATURE_ACCEL_RECT: u32 = 1 << 2;
+// display_draw_text / display_text_width / display_font_metrics are implemented.
+pub const FEATURE_ACCEL_TEXT: u32 = 1 << 3;
+// display_refresh honors sub-rectangles (otherwise it refreshes the whole screen).
+pub const FEATURE_PARTIAL_REFRESH: u32 = 1 << 4;
+// The Mono / MonoFast refresh modes are meaningfully cheaper than FullQuality.
+pub const FEATURE_FAST_MONO_REFRESH: u32 = 1 << 5;
+
+/// The revision of the ECALL ABI described by this crate. Served by every VM through
+/// `DEVICE_PROPERTY_ABI_REVISION`; bumped when ECALLs or their semantics are added.
+/// Feature bits are the primary probe — gate on the revision only when no bit exists
+/// for what you need.
+pub const VANADIUM_ABI_REVISION: u32 = 1;
+
+/// The display's alignment constraints, advertised via
+/// `DEVICE_PROPERTY_DISPLAY_GRANULARITY` and packed as
+/// `(x << 24) | (y << 16) | (w << 8) | h`, each component a power of two `>= 1`.
+///
+/// A `display_blit` destination rectangle must have `x`/`y`/`w`/`h` each a multiple of
+/// the corresponding component (violations fail with `DISPLAY_ERR_ALIGNMENT`); UI code
+/// should align using these values, never a hardcoded constant. The current NBGL
+/// devices report `(1, 4, 1, 4)` — y and height in multiples of 4 rows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DisplayGranularity {
+    pub x: u8,
+    pub y: u8,
+    pub w: u8,
+    pub h: u8,
+}
+
+impl DisplayGranularity {
+    /// No constraint: every rectangle is acceptable.
+    pub const NONE: DisplayGranularity = DisplayGranularity {
+        x: 1,
+        y: 1,
+        w: 1,
+        h: 1,
+    };
+
+    /// Packs into the `u32` property encoding.
+    pub const fn pack(self) -> u32 {
+        ((self.x as u32) << 24) | ((self.y as u32) << 16) | ((self.w as u32) << 8) | self.h as u32
+    }
+
+    /// Reconstructs from the `u32` property encoding. Returns `None` if any component
+    /// is not a power of two (which includes 0 — i.e. an unsupported property).
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        let g = DisplayGranularity {
+            x: (value >> 24) as u8,
+            y: (value >> 16) as u8,
+            w: (value >> 8) as u8,
+            h: value as u8,
+        };
+        if g.x.is_power_of_two()
+            && g.y.is_power_of_two()
+            && g.w.is_power_of_two()
+            && g.h.is_power_of_two()
+        {
+            Some(g)
+        } else {
+            None
+        }
+    }
+}
 
 /// Pixel format of a buffer passed to the `display_blit` ECALL.
 ///

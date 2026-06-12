@@ -94,6 +94,32 @@ const NATIVE_PIXEL_FORMAT: PixelFormat = PixelFormat::Mono1;
 #[cfg(any(target_os = "stax", target_os = "flex"))]
 const NATIVE_PIXEL_FORMAT: PixelFormat = PixelFormat::Gray4;
 
+// Feature bits advertised via DEVICE_PROPERTY_FEATURES: the input model per device
+// family, plus the display accelerations (NBGL provides all of them on every
+// supported model). Apps branch on these bits, never on the device id.
+#[cfg(any(target_os = "stax", target_os = "flex", target_os = "apex_p"))]
+const DEVICE_FEATURES: u32 = FEATURE_TOUCH
+    | FEATURE_ACCEL_RECT
+    | FEATURE_ACCEL_TEXT
+    | FEATURE_PARTIAL_REFRESH
+    | FEATURE_FAST_MONO_REFRESH;
+#[cfg(any(target_os = "nanox", target_os = "nanosplus"))]
+const DEVICE_FEATURES: u32 = FEATURE_BUTTONS
+    | FEATURE_ACCEL_RECT
+    | FEATURE_ACCEL_TEXT
+    | FEATURE_PARTIAL_REFRESH
+    | FEATURE_FAST_MONO_REFRESH;
+
+// The display granularity advertised to apps and enforced by handle_display_blit —
+// one constant, so the contract and the check can never disagree. NBGL's low-level
+// image draw requires y0 and height in multiples of 4 on every supported model.
+const DISPLAY_GRANULARITY: DisplayGranularity = DisplayGranularity {
+    x: 1,
+    y: 4,
+    w: 1,
+    h: 4,
+};
+
 // BIP32 supports up to 255, but we don't want that many, and it would be very slow anyway
 const MAX_BIP32_PATH: usize = 16;
 
@@ -1745,10 +1771,16 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
             return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
 
-        // NBGL's low-level image draw requires y0 and height to be multiples of 4.
-        // The SDK aligns full-screen and partial flushes to satisfy this; reject
-        // anything that doesn't so we never feed the driver a malformed area.
-        if y % 4 != 0 || h % 4 != 0 {
+        // The destination rectangle must respect the advertised display granularity
+        // (on NBGL, the low-level image draw requires y0 and height in multiples of
+        // 4). The SDK aligns its flushes to the queried granularity; reject
+        // violations so we never feed the driver a malformed area.
+        let g = DISPLAY_GRANULARITY;
+        if x % g.x as u32 != 0
+            || y % g.y as u32 != 0
+            || w % g.w as u32 != 0
+            || h % g.h as u32 != 0
+        {
             return Ok(DISPLAY_ERR_ALIGNMENT);
         }
 
@@ -1940,9 +1972,15 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         match property {
             DEVICE_PROPERTY_ID => Ok(pack_u16(VENDOR_ID, PRODUCT_ID)),
             DEVICE_PROPERTY_SCREEN_SIZE => Ok(pack_u16(SCREEN_WIDTH, SCREEN_HEIGHT)),
-            DEVICE_PROPERTY_FEATURES => Ok(0),
+            DEVICE_PROPERTY_FEATURES => Ok(DEVICE_FEATURES),
             DEVICE_PROPERTY_PIXEL_FORMAT => Ok(NATIVE_PIXEL_FORMAT as u32),
-            _ => Err(CommEcallError::InvalidParameters("Unknown device property")),
+            DEVICE_PROPERTY_DISPLAY_GRANULARITY => Ok(DISPLAY_GRANULARITY.pack()),
+            DEVICE_PROPERTY_MAX_TEXT_LEN => Ok(DISPLAY_MAX_TEXT_LEN as u32),
+            DEVICE_PROPERTY_ABI_REVISION => Ok(VANADIUM_ABI_REVISION),
+            // Unknown properties return 0, never an error: every defined property has
+            // a nonzero value, so apps can probe for properties added in later ABI
+            // revisions (a fatal error here would make probing impossible).
+            _ => Ok(0),
         }
     }
 }

@@ -44,10 +44,12 @@ pub fn exit(status: i32) -> ! {
 /// Retrieves device information based on the requested property type.
 ///
 /// # Parameters
-/// - `property_id`: The property identifier
+/// - `property_id`: The property identifier (a `DEVICE_PROPERTY_*` constant)
 ///
 /// # Returns
-/// The requested property value. It will panic if the property is not supported.
+/// The requested property value, or 0 if the property is not supported by this VM.
+/// Every defined property has a nonzero value, so 0 is unambiguous and properties
+/// added in later ABI revisions can be probed safely.
 #[inline(always)]
 pub fn get_device_property(property_id: u32) -> u32 {
     ecalls_module::get_device_property(property_id)

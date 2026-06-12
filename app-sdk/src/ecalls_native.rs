@@ -894,16 +894,36 @@ pub fn show_step(_step_desc: *const u8, _step_desc_len: usize) -> u32 {
 }
 
 pub fn get_device_property(property: u32) -> u32 {
+    use common::ecall_constants::*;
     match property {
-        common::ecall_constants::DEVICE_PROPERTY_ID => 0,
-        common::ecall_constants::DEVICE_PROPERTY_SCREEN_SIZE => {
+        // The native pseudo-device: vendor 0xFFFF, product 1 (nonzero per the
+        // property contract — 0 always means "unsupported property").
+        DEVICE_PROPERTY_ID => 0xFFFF_0001,
+        DEVICE_PROPERTY_SCREEN_SIZE => {
             ((NATIVE_SCREEN_WIDTH as u32) << 16) | (NATIVE_SCREEN_HEIGHT as u32)
         }
-        common::ecall_constants::DEVICE_PROPERTY_FEATURES => 0,
-        common::ecall_constants::DEVICE_PROPERTY_PIXEL_FORMAT => {
-            common::ecall_constants::PixelFormat::Gray4 as u32
+        // The virtual screen mirrors a touch-screen (Stax-like) device.
+        DEVICE_PROPERTY_FEATURES => {
+            FEATURE_TOUCH
+                | FEATURE_ACCEL_RECT
+                | FEATURE_ACCEL_TEXT
+                | FEATURE_PARTIAL_REFRESH
+                | FEATURE_FAST_MONO_REFRESH
         }
-        _ => panic!("Unsupported device property: {}", property),
+        DEVICE_PROPERTY_PIXEL_FORMAT => PixelFormat::Gray4 as u32,
+        // Same 4-row granularity as the NBGL devices (display_blit enforces it here
+        // too, so violations are caught on the dev machine).
+        DEVICE_PROPERTY_DISPLAY_GRANULARITY => DisplayGranularity {
+            x: 1,
+            y: 4,
+            w: 1,
+            h: 4,
+        }
+        .pack(),
+        DEVICE_PROPERTY_MAX_TEXT_LEN => DISPLAY_MAX_TEXT_LEN as u32,
+        DEVICE_PROPERTY_ABI_REVISION => VANADIUM_ABI_REVISION,
+        // Unknown properties return 0 (the probing contract), never panic.
+        _ => 0,
     }
 }
 
