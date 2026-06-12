@@ -547,7 +547,7 @@ fn fill_screen_rect(x: usize, y: usize, w: usize, h: usize, intensity: u8) {
     }
 }
 
-pub fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> i32 {
+pub fn display_fill_rect(pos: u32, size: u32, color: u32) -> i32 {
     use common::ecall_constants::*;
 
     let Some(color) = Color::from_u32(color) else {
@@ -555,14 +555,14 @@ pub fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> i32 {
         // valid encoding (Black), so every unknown value maps to UNSUPPORTED.
         return DISPLAY_ERR_UNSUPPORTED;
     };
+    let (x, y) = display_unpack_pair(pos);
+    let (w, h) = display_unpack_pair(size);
     if w == 0 || h == 0 {
         return 0;
     }
     {
         let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
-        if (x as usize).saturating_add(w as usize) > screen.width
-            || (y as usize).saturating_add(h as usize) > screen.height
-        {
+        if (x + w) as usize > screen.width || (y + h) as usize > screen.height {
             return DISPLAY_ERR_OUT_OF_BOUNDS;
         }
     }
@@ -638,32 +638,35 @@ impl embedded_graphics::geometry::OriginDimensions for VsTarget<'_> {
 }
 
 pub fn display_draw_text(
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
+    pos: u32,
+    size: u32,
     text: *const u8,
     text_len: usize,
-    color_font: u32,
+    font: u32,
+    color: u32,
+    bg: u32,
 ) -> i32 {
     use common::ecall_constants::*;
 
-    // Packed as (bg << 16) | (fg << 8) | font_role (see Screen::draw_text).
     // Validation mirrors the VM handler: same checks, same order, same codes.
-    if Font::from_u32(color_font & 0xff).is_none() {
-        return display_unknown_enum_err(color_font & 0xff);
+    if Font::from_u32(font).is_none() {
+        return display_unknown_enum_err(font);
     }
-    let Some(_color) = Color::from_u32((color_font >> 8) & 0xff) else {
+    let Some(_color) = Color::from_u32(color) else {
         return DISPLAY_ERR_UNSUPPORTED;
     };
-    if Color::from_u32((color_font >> 16) & 0xff).is_none() {
+    let Some(bg) = Color::from_u32(bg) else {
         return DISPLAY_ERR_UNSUPPORTED;
+    };
+    let (x, y) = display_unpack_pair(pos);
+    let (w, h) = display_unpack_pair(size);
+    // An empty clip box draws nothing.
+    if w == 0 || h == 0 {
+        return 0;
     }
     {
         let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
-        if (x as usize).saturating_add(w as usize) > screen.width
-            || (y as usize).saturating_add(h as usize) > screen.height
-        {
+        if (x + w) as usize > screen.width || (y + h) as usize > screen.height {
             return DISPLAY_ERR_OUT_OF_BOUNDS;
         }
     }
@@ -675,6 +678,19 @@ pub fn display_draw_text(
     let Ok(_s) = core::str::from_utf8(bytes) else {
         return DISPLAY_ERR_INVALID_ARG;
     };
+    if bytes.contains(&0) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
+
+    // Defined rendering semantics, mirroring the device: the box is filled with `bg`,
+    // and glyphs are clipped to it — none drawn if the box is shorter than the font,
+    // truncated at the last fitting glyph if the text is wider than the box (using the
+    // same per-character advance `display_text_width` reports, so the two agree).
+    fill_screen_rect(x as usize, y as usize, w as usize, h as usize, bg.intensity());
+    let (_cw, fh, _) = native_font_dims(font);
+    if fh > h {
+        return 0;
+    }
     #[cfg(feature = "embedded-graphics")]
     {
         use embedded_graphics::{
@@ -683,20 +699,17 @@ pub fn display_draw_text(
             prelude::*,
             text::{Baseline, Text},
         };
-        let style = MonoTextStyle::new(native_mono_font(color_font & 0xff), Gray4::new(_color.intensity()));
+        let fit = (w / _cw) as usize;
+        let fitted: std::string::String = _s.chars().take(fit).collect();
+        let style = MonoTextStyle::new(native_mono_font(font), Gray4::new(_color.intensity()));
         let mut screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
         let mut target = VsTarget {
             screen: &mut screen,
         };
         // The device positions text within the (x, y, w, h) box from the top-left; mirror
         // that with a Top baseline at (x, y).
-        let _ = Text::with_baseline(_s, Point::new(x as i32, y as i32), style, Baseline::Top)
+        let _ = Text::with_baseline(&fitted, Point::new(x as i32, y as i32), style, Baseline::Top)
             .draw(&mut target);
-        let _ = (w, h);
-    }
-    #[cfg(not(feature = "embedded-graphics"))]
-    {
-        let _ = (x, y, w, h);
     }
     0
 }

@@ -1903,10 +1903,8 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
     fn handle_display_fill_rect<E: fmt::Debug>(
         &mut self,
         _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
+        pos: u32,
+        size: u32,
         color: u32,
     ) -> Result<i32, CommEcallError> {
         let Some(color) = Color::from_u32(color) else {
@@ -1914,12 +1912,13 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
             // valid encoding (Black), so every unknown value maps to UNSUPPORTED.
             return Ok(DISPLAY_ERR_UNSUPPORTED);
         };
+        let (x, y) = display_unpack_pair(pos);
+        let (w, h) = display_unpack_pair(size);
         if w == 0 || h == 0 {
             return Ok(0);
         }
-        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
-            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
-        {
+        // The unpacked components are at most 0xffff each, so the sums cannot overflow.
+        if x + w > SCREEN_WIDTH as u32 || y + h > SCREEN_HEIGHT as u32 {
             return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
         self.ux_handler.fill_rect(x, y, w, h, color)?;
@@ -1929,28 +1928,32 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
     fn handle_display_draw_text<E: fmt::Debug>(
         &mut self,
         cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
+        pos: u32,
+        size: u32,
         text_ptr: GuestPointer,
         text_len: usize,
-        color_font: u32,
+        font: u32,
+        color: u32,
+        bg: u32,
     ) -> Result<i32, CommEcallError> {
-        let Some(font) = Font::from_u32(color_font & 0xff) else {
-            return Ok(display_unknown_enum_err(color_font & 0xff));
+        let Some(font) = Font::from_u32(font) else {
+            return Ok(display_unknown_enum_err(font));
         };
-        let Some(color) = Color::from_u32((color_font >> 8) & 0xff) else {
+        let Some(color) = Color::from_u32(color) else {
             return Ok(DISPLAY_ERR_UNSUPPORTED);
         };
         // The background color is validated like the others (v1 silently fell back
         // to White).
-        let Some(bg) = Color::from_u32((color_font >> 16) & 0xff) else {
+        let Some(bg) = Color::from_u32(bg) else {
             return Ok(DISPLAY_ERR_UNSUPPORTED);
         };
-        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
-            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
-        {
+        let (x, y) = display_unpack_pair(pos);
+        let (w, h) = display_unpack_pair(size);
+        // An empty clip box draws nothing.
+        if w == 0 || h == 0 {
+            return Ok(0);
+        }
+        if x + w > SCREEN_WIDTH as u32 || y + h > SCREEN_HEIGHT as u32 {
             return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
         if text_len > DISPLAY_MAX_TEXT_LEN {
@@ -1959,7 +1962,9 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         let mut buf = vec![0u8; text_len];
         cpu.get_segment::<E>(text_ptr.0)?
             .read_buffer(text_ptr.0, &mut buf)?;
-        if core::str::from_utf8(&buf).is_err() {
+        // The text must be valid UTF-8 without interior NULs (the box-fitting
+        // measurement and width queries are NUL-terminated, and the two must agree).
+        if core::str::from_utf8(&buf).is_err() || buf.contains(&0) {
             return Ok(DISPLAY_ERR_INVALID_ARG);
         }
         self.ux_handler.draw_text(x, y, w, h, &buf, font, color, bg)?;
@@ -2176,8 +2181,6 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     reg!(A0),
                     reg!(A1),
                     reg!(A2),
-                    reg!(A3),
-                    reg!(A4),
                 )? as u32;
             }
             ECALL_DISPLAY_DRAW_TEXT => {
@@ -2185,10 +2188,10 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     cpu,
                     reg!(A0),
                     reg!(A1),
-                    reg!(A2),
-                    reg!(A3),
-                    GPreg!(A4),
-                    reg!(A5) as usize,
+                    GPreg!(A2),
+                    reg!(A3) as usize,
+                    reg!(A4),
+                    reg!(A5),
                     reg!(A6),
                 )? as u32;
             }

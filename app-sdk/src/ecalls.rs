@@ -229,11 +229,14 @@ forward_to_ecall! {
     ///
     /// Unlike [`display_blit`], no framebuffer is kept in guest RAM and no pixels are
     /// rasterized in the guest: only a small descriptor crosses the ECALL boundary and
-    /// the OS does the fill natively. This does **not** refresh the panel; call
+    /// the OS does the fill natively. There is no granularity constraint (partial rows
+    /// are handled internally). This does **not** refresh the panel; call
     /// [`display_refresh`] once after a batch of draw ops.
     ///
     /// # Parameters
-    /// - `x`, `y`, `w`, `h`: The rectangle to fill, in screen pixels.
+    /// - `pos`: Packed `(x << 16) | y` top-left of the rectangle, in screen pixels
+    ///   (see [`display_pack_pair`](common::ecall_constants::display_pack_pair)).
+    /// - `size`: Packed `(w << 16) | h` rectangle size, in pixels.
     /// - `color`: A [`common::ecall_constants::Color`] palette value.
     ///
     /// # Returns
@@ -243,35 +246,47 @@ forward_to_ecall! {
     /// # Safety
     /// This call does not dereference any pointer, but is kept `unsafe` for
     /// consistency with the other graphics ECALLs.
-    pub unsafe fn display_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> i32;
+    pub unsafe fn display_fill_rect(pos: u32, size: u32, color: u32) -> i32;
 
     /// Draws a UTF-8 string with an OS font, directly in the framebuffer (no guest-side
     /// font rasterization). Does not refresh the panel.
     ///
+    /// Rendering semantics are defined, not device-dependent:
+    /// 1. the box is filled with `bg`, which is also the anti-aliasing background;
+    /// 2. the string is drawn as one line, the font's top edge at the box top and the
+    ///    left edge at the box left (alignment/centering is the caller's job, via
+    ///    [`display_text_width`]);
+    /// 3. glyphs are clipped to the box: text wider than `w` is truncated at the last
+    ///    fitting glyph, and a box shorter than the font height draws no glyphs at
+    ///    all — nothing ever paints outside the box.
+    ///
     /// # Parameters
-    /// - `x`, `y`, `w`, `h`: The bounding area for the text, in screen pixels.
-    /// - `text`: Pointer to the UTF-8 string bytes.
+    /// - `pos`: Packed `(x << 16) | y` top-left of the text box, in screen pixels
+    ///   (see [`display_pack_pair`](common::ecall_constants::display_pack_pair)).
+    /// - `size`: Packed `(w << 16) | h` box size, in pixels — the clip box.
+    /// - `text`: Pointer to the UTF-8 string bytes (no interior NUL).
     /// - `text_len`: Length of `text` in bytes.
-    /// - `color_font`: Packed `(bg << 16) | (color << 8) | font`, where `color` and `bg`
-    ///   are [`common::ecall_constants::Color`] values (text and anti-alias background) and
-    ///   `font` a [`common::ecall_constants::Font`].
+    /// - `font`: A [`common::ecall_constants::Font`] role.
+    /// - `color`: A [`common::ecall_constants::Color`] palette value for the glyphs.
+    /// - `bg`: A [`common::ecall_constants::Color`] palette value for the box fill /
+    ///   anti-alias background.
     ///
     /// # Returns
     /// 0 on success; a negative `DISPLAY_ERR_*` code on error (unknown font or
-    /// color, out-of-bounds rectangle, text longer than
+    /// color, out-of-bounds box, text longer than
     /// [`DISPLAY_MAX_TEXT_LEN`](common::ecall_constants::DISPLAY_MAX_TEXT_LEN),
-    /// invalid UTF-8). Parameter errors never abort the V-App.
+    /// invalid UTF-8 or interior NUL). Parameter errors never abort the V-App.
     ///
     /// # Safety
     /// - `text` must be a valid pointer to at least `text_len` bytes of readable memory.
     pub unsafe fn display_draw_text(
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
+        pos: u32,
+        size: u32,
         text: *const u8,
         text_len: usize,
-        color_font: u32,
+        font: u32,
+        color: u32,
+        bg: u32,
     ) -> i32;
 
     /// Returns the rendered width, in screen pixels, of a UTF-8 string in an OS font,

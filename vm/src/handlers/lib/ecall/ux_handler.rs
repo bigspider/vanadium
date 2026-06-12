@@ -595,10 +595,22 @@ impl UxHandler {
         Ok(())
     }
 
-    /// Draws a UTF-8 string with an OS font directly in the framebuffer. Does not refresh
-    /// the panel. `bg` is the color behind the text: NBGL fills the text box with it and
-    /// anti-aliases the glyphs against it, so pass the actual background (e.g. a button's
-    /// fill) to avoid a light fringe.
+    /// Draws a UTF-8 string with an OS font directly in the framebuffer. Does not
+    /// refresh the panel.
+    ///
+    /// Implements the ECALL's defined rendering semantics (v1 inherited "whatever NBGL
+    /// does on this device"): the box is filled with `bg` (which is also what NBGL
+    /// anti-aliases the glyphs against — pass the actual background to avoid a light
+    /// fringe), the string is drawn as one line from the box's top-left, and glyphs
+    /// are clipped to the box. NBGL itself neither fills the box nor clips: glyphs
+    /// paint at full font height and march past the area's width, so the fill is an
+    /// explicit `fill_rect` and the clip is enforced here — vertically by drawing no
+    /// glyphs when the box is shorter than the font, horizontally by truncating at
+    /// the last fitting glyph (`nbgl_getTextMaxLenAndWidth` prefix measurement, the
+    /// same metrics `nbgl_getTextWidth` reports for layout).
+    ///
+    /// `text` must contain no interior NUL (enforced by the dispatcher; the
+    /// measurement syscall takes a NUL-terminated string).
     pub fn draw_text(
         &mut self,
         x: u32,
@@ -618,6 +630,42 @@ impl UxHandler {
                 font_id: sys::nbgl_font_id_e,
                 font_color: sys::color_t,
             ) -> sys::nbgl_font_id_e;
+            fn nbgl_getTextMaxLenAndWidth(
+                font_id: sys::nbgl_font_id_e,
+                text: *const core::ffi::c_char,
+                max_width: u16,
+                len: *mut u16,
+                width: *mut u16,
+                wrapping: bool,
+            );
+        }
+
+        self.fill_rect(x, y, w, h, bg)?;
+
+        // Vertical clip: glyphs render at full font height wherever they render.
+        let (font_height, _) = self.font_metrics(font);
+        if (font_height as u32) > h {
+            return Ok(());
+        }
+
+        // Horizontal clip: the longest prefix whose rendered width fits the box.
+        let cstr = CString::new(text)?;
+        let id = font_id(font);
+        let mut fit_len: u16 = 0;
+        let mut fit_width: u16 = 0;
+        unsafe {
+            nbgl_getTextMaxLenAndWidth(
+                id,
+                cstr.as_ptr(),
+                w as u16,
+                &mut fit_len,
+                &mut fit_width,
+                false,
+            );
+        }
+        let fit_len = (fit_len as usize).min(text.len());
+        if fit_len == 0 {
+            return Ok(());
         }
 
         let area = sys::nbgl_area_t {
@@ -632,9 +680,9 @@ impl UxHandler {
         unsafe {
             nbgl_drawText(
                 &area,
-                text.as_ptr() as *const core::ffi::c_char,
-                text.len() as u16,
-                font_id(font),
+                cstr.as_ptr(),
+                fit_len as u16,
+                id,
                 color as u8 as sys::color_t,
             );
         }

@@ -77,7 +77,11 @@ impl Screen {
     /// rectangle falls outside the screen.
     pub fn fill_rect(&self, x: u16, y: u16, w: u16, h: u16, color: Color) -> bool {
         unsafe {
-            ecalls::display_fill_rect(x as u32, y as u32, w as u32, h as u32, color as u32) == 0
+            ecalls::display_fill_rect(
+                display_pack_pair(x, y),
+                display_pack_pair(w, h),
+                color as u32,
+            ) == 0
         }
     }
 
@@ -86,9 +90,10 @@ impl Screen {
         self.fill_rect(0, 0, self.width, self.height, color)
     }
 
-    /// Draws a UTF-8 string with an OS [`Font`] inside the given area. The OS anti-aliases
-    /// the glyphs against `bg`, so pass the color actually behind the text (e.g. a button's
-    /// fill) to avoid a light fringe.
+    /// Draws a UTF-8 string with an OS [`Font`] inside the `(x, y, w, h)` box. The box
+    /// is filled with `bg` (also the anti-aliasing background, so pass the color
+    /// actually behind the text to avoid a light fringe) and glyphs are clipped to it:
+    /// text wider than `w` is truncated at the last fitting glyph.
     pub fn draw_text(
         &self,
         x: u16,
@@ -100,18 +105,15 @@ impl Screen {
         color: Color,
         bg: Color,
     ) -> bool {
-        // Packed as (bg << 16) | (fg << 8) | font_role; each field is small (Font 0..2,
-        // Color 0..3), see the display_draw_text ECALL.
-        let color_font = (font as u32) | ((color as u32) << 8) | ((bg as u32) << 16);
         unsafe {
             ecalls::display_draw_text(
-                x as u32,
-                y as u32,
-                w as u32,
-                h as u32,
+                display_pack_pair(x, y),
+                display_pack_pair(w, h),
                 text.as_ptr(),
                 text.len(),
-                color_font,
+                font as u32,
+                color as u32,
+                bg as u32,
             ) == 0
         }
     }

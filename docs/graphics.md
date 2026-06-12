@@ -268,21 +268,26 @@ descriptor-shaped, glyphs/icons are native, and only changed regions are refresh
 pub const ECALL_DISPLAY_FILL_RECT: u32 = 42;  // -> nbgl_frontDrawRect
 pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 43;  // -> nbgl_drawText (OS fonts)
 
-display_fill_rect(x, y, w, h, color) -> i32;
-display_draw_text(x, y, w, h, text, text_len, color_font) -> i32;
+display_fill_rect(pos, size, color) -> i32;
+display_draw_text(pos, size, text, text_len, font, color, bg) -> i32;
 ```
 
-(All display ops return 0 on success and a negative `DISPLAY_ERR_*` code on error —
-see the [error model](#common-conventions) in the v2 proposal, already in effect.)
+(All display ops return 0 on success and a negative `DISPLAY_ERR_*` code on error, and
+take packed `(x << 16) | y` / `(w << 16) | h` coordinates — see the
+[conventions](#common-conventions) in the v2 proposal, already in effect.)
 
-- `color` is a [`Color`](../common/src/ecall_constants.rs) — NBGL's **4-color palette**
-  (`Black`, `DarkGray`, `LightGray`, `White`). The vector primitives are 4-color; for
-  full 16-level grayscale use the blit path.
-- `color_font` packs `(bg << 16) | (color << 8) | font`: `color` is the text color, `bg`
-  the color behind the text (NBGL fills the text box with it and anti-aliases the glyphs
-  against it), and `font` a semantic [`Font`](../common/src/ecall_constants.rs)
-  (`Regular` / `Bold` / `Large`) that the VM maps to the device's matching
-  `nbgl_font_id_e` (the font sets differ per device).
+- `color` / `bg` are [`Color`](../common/src/ecall_constants.rs) values — NBGL's
+  **4-color palette** (`Black`, `DarkGray`, `LightGray`, `White`). The vector
+  primitives are 4-color; for full 16-level grayscale use the blit path.
+- `font` is a semantic [`Font`](../common/src/ecall_constants.rs) role (`Regular` /
+  `Bold` / `Large`) that the VM maps to the device's matching `nbgl_font_id_e` (the
+  font sets differ per device).
+- `display_draw_text` has **defined rendering semantics**: the `(pos, size)` box is
+  filled with `bg` (also the anti-aliasing background), the string is drawn as one
+  line from the box's top-left, and glyphs are clipped to the box — text wider than
+  the box is truncated at the last fitting glyph (the VM measures the fitting prefix
+  with `nbgl_getTextMaxLenAndWidth`), and a box shorter than the font height draws no
+  glyphs. NBGL itself neither fills nor clips, so the VM enforces all of this.
 - `display_fill_rect` does **not** require 4-row alignment: `nbgl_frontDrawRect` aligns
   `y0`/`height` itself and preserves the partial rows. (The blit path's column-major /
   4-row constraints do not apply here.)
@@ -854,8 +859,10 @@ backend is the strictest implementation.**
       from per-device constants via the new properties; `get_device_property` soft-fail
 - [x] `vm`: blit packed coordinates + `src`/`src_stride` addressing
 - [x] `vm`: self-aligning, clipping refresh with advisory modes (SDK `align4_clip` deleted)
+- [x] `vm`: fill/text packed coordinates, separate font/color/bg args, defined text
+      rendering (bg box fill + glyph clipping via `nbgl_getTextMaxLenAndWidth`)
 - [ ] `vm`: Gray4↔Mono1 conversion in `blit_band`
-- [ ] `vm`: RGB quantization for fill/text; text clipping
+- [ ] `vm`: RGB quantization for fill/text
 - [ ] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker
 - [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
       (delete the `has_page_api()` device table); `Color` named constants over RGB;
