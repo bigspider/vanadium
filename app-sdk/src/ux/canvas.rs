@@ -14,7 +14,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use common::ecall_constants::{
-    PixelFormat, RefreshMode, DEVICE_PROPERTY_PIXEL_FORMAT, DEVICE_PROPERTY_SCREEN_SIZE,
+    display_pack_pair, PixelFormat, RefreshMode, DEVICE_PROPERTY_PIXEL_FORMAT,
+    DEVICE_PROPERTY_SCREEN_SIZE,
 };
 
 /// The sensible default panel refresh mode for a given pixel format: full-color for
@@ -37,9 +38,10 @@ use crate::ecalls;
 /// per pixel), so graphics V-Apps should size their heap accordingly (see
 /// `VAPP_HEAP_SIZE`).
 ///
-/// Because rows are stored at the screen's stride, a full-width flush (the common
-/// case, including [`Canvas::flush`]) blits the backing buffer directly with no
-/// extra allocation.
+/// Flushes are zero-copy: the blit ECALL is a copy-rect that reads a sub-rectangle
+/// of a larger source bitmap, so any [`Canvas::flush_area`] passes the backing
+/// buffer directly (with the rectangle's position and the canvas stride) — no
+/// repacking, no allocation.
 ///
 /// # Performance: do not full-screen `flush()` on large devices
 ///
@@ -207,54 +209,17 @@ impl Canvas {
     /// Draws `[x, x+w) × [y, y+h)` into the screen framebuffer without refreshing.
     /// `y` and `h` must already be multiples of 4. Returns `true` on success.
     fn draw_area(&self, x: usize, y: usize, w: usize, h: usize) -> bool {
-        // Fast path: a full-width strip is already contiguous at the canvas stride,
-        // so we can blit the backing buffer directly without copying.
-        if x == 0 && w == self.width {
-            let buf = &self.pixels[y * self.stride..(y + h) * self.stride];
-            return unsafe {
-                ecalls::display_blit(
-                    0,
-                    y as u32,
-                    w as u32,
-                    h as u32,
-                    buf.as_ptr(),
-                    buf.len(),
-                    self.format as u32,
-                )
-            } == 0;
-        }
-
-        // General path: repack the sub-rectangle at its own (narrower) stride.
-        let out_stride = self.format.stride(w);
-        let mut out = vec![0u8; out_stride * h];
-        for row in 0..h {
-            for col in 0..w {
-                let intensity = self.pixel(x + col, y + row);
-                match self.format {
-                    PixelFormat::Gray4 => {
-                        let idx = row * out_stride + col / 2;
-                        if col % 2 == 0 {
-                            out[idx] |= (intensity & 0x0f) << 4;
-                        } else {
-                            out[idx] |= intensity & 0x0f;
-                        }
-                    }
-                    PixelFormat::Mono1 => {
-                        if intensity >= 8 {
-                            out[row * out_stride + col / 8] |= 1 << (7 - (col % 8));
-                        }
-                    }
-                }
-            }
-        }
+        // The blit is a copy-rect: the whole backing buffer is the source bitmap and
+        // `(x, y)` selects the sub-rectangle inside it, so no repacking (and no
+        // allocation) is ever needed, whatever the rectangle's position.
         unsafe {
             ecalls::display_blit(
-                x as u32,
-                y as u32,
-                w as u32,
-                h as u32,
-                out.as_ptr(),
-                out.len(),
+                display_pack_pair(x as u16, y as u16),
+                display_pack_pair(w as u16, h as u16),
+                self.pixels.as_ptr(),
+                self.pixels.len(),
+                display_pack_pair(x as u16, y as u16),
+                self.stride as u32,
                 self.format as u32,
             ) == 0
         }
@@ -264,15 +229,14 @@ impl Canvas {
     /// absolute screen row `screen_y`, without refreshing. Used by banded rendering.
     /// `screen_y` and `h` must be multiples of 4, `h <= height`. Returns `true` on success.
     fn blit_band_to_screen(&self, screen_y: usize, h: usize) -> bool {
-        let buf = &self.pixels[0..h * self.stride];
         unsafe {
             ecalls::display_blit(
+                display_pack_pair(0, screen_y as u16),
+                display_pack_pair(self.width as u16, h as u16),
+                self.pixels.as_ptr(),
+                self.pixels.len(),
                 0,
-                screen_y as u32,
-                self.width as u32,
-                h as u32,
-                buf.as_ptr(),
-                buf.len(),
+                self.stride as u32,
                 self.format as u32,
             ) == 0
         }

@@ -70,6 +70,23 @@ pub const fn display_unknown_enum_err(raw: u32) -> i32 {
     }
 }
 
+// The display ECALLs pack pairs of 16-bit values into single u32 arguments — positions
+// as `(x << 16) | y`, sizes as `(w << 16) | h` — so a rectangle plus a pixel source fits
+// in the 8 argument registers. The two helpers below are the only place the packing is
+// written out, shared by the SDK, the VM and the native backend.
+
+/// Packs a `(hi, lo)` pair of 16-bit values into the `(hi << 16) | lo` display-ECALL
+/// encoding: `display_pack_pair(x, y)` for positions, `display_pack_pair(w, h)` for sizes.
+pub const fn display_pack_pair(hi: u16, lo: u16) -> u32 {
+    ((hi as u32) << 16) | lo as u32
+}
+
+/// Splits a packed display pair back into `(hi, lo)` — `(x, y)` or `(w, h)`. The
+/// components are widened to `u32` as that is what range checks and arithmetic want.
+pub const fn display_unpack_pair(packed: u32) -> (u32, u32) {
+    (packed >> 16, packed & 0xffff)
+}
+
 // Constants used for GET_DEVICE_PROPERTY.
 //
 // Contract: querying a property the VM does not know returns 0 (never an error or an

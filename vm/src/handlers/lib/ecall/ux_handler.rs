@@ -393,11 +393,16 @@ impl UxHandler {
     /// Draws a horizontal band of pixels onto the screen framebuffer.
     ///
     /// `pixels` is the band in the SDK's row-major, left-to-right [`PixelFormat`]
-    /// packing (`h` rows of `stride(w)` bytes). NBGL's `nbgl_frontDrawImage` instead
-    /// consumes its buffer **column-major, right-to-left, top-to-bottom**, packed
-    /// MSB-first (high nibble first for 4BPP) with no per-column padding (see
-    /// `nbgl_driver_drawImage`), so we transpose into that layout here. `y` and `h`
-    /// must be multiples of 4 (an NBGL constraint, enforced by the caller).
+    /// packing: `h` rows of `stride(first_px + w)` bytes, the band's rectangle
+    /// starting `first_px` pixels into each row (the copy-rect blit reads source
+    /// rows from their first addressed *byte*, so a left edge that falls mid-byte
+    /// arrives as a sub-byte pixel offset; `first_px` is 0 for byte-aligned
+    /// sources). NBGL's `nbgl_frontDrawImage` instead consumes its buffer
+    /// **column-major, right-to-left, top-to-bottom**, packed MSB-first (high
+    /// nibble first for 4BPP) with no per-column padding (see
+    /// `nbgl_driver_drawImage`), so we transpose into that layout here — the
+    /// per-pixel addressing makes the sub-byte offset free. `y` and `h` must be
+    /// multiples of 4 (an NBGL constraint, enforced by the caller).
     ///
     /// The blit ECALL splits a rectangle into bands to bound the VM's scratch
     /// memory; call [`UxHandler::blit_refresh`] once afterwards to push the drawn
@@ -414,6 +419,7 @@ impl UxHandler {
         y: u32,
         w: u32,
         h: u32,
+        first_px: usize,
         format: common::ecall_constants::PixelFormat,
         pixels: &[u8],
         out: &mut [u8],
@@ -442,7 +448,7 @@ impl UxHandler {
 
         let w = w as usize;
         let h = h as usize;
-        let in_stride = format.stride(w);
+        let in_stride = format.stride(first_px + w);
 
         // Transpose row-major (our layout) into NBGL's column-major, right-to-left
         // layout, into the caller-provided scratch buffer. Pixels are emitted from
@@ -454,11 +460,12 @@ impl UxHandler {
         out.fill(0);
         let mut k = 0usize; // index of the pixel being emitted
         for ox in (0..w).rev() {
+            let p = first_px + ox; // pixel position within the source row
             for oy in 0..h {
                 match format {
                     PixelFormat::Gray4 => {
-                        let byte = pixels[oy * in_stride + ox / 2];
-                        let v = if ox % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+                        let byte = pixels[oy * in_stride + p / 2];
+                        let v = if p % 2 == 0 { byte >> 4 } else { byte & 0x0f };
                         if k % 2 == 0 {
                             out[k / 2] |= v << 4;
                         } else {
@@ -466,7 +473,7 @@ impl UxHandler {
                         }
                     }
                     PixelFormat::Mono1 => {
-                        let bit = (pixels[oy * in_stride + ox / 8] >> (7 - (ox % 8))) & 1;
+                        let bit = (pixels[oy * in_stride + p / 8] >> (7 - (p % 8))) & 1;
                         if bit == 1 {
                             out[k / 8] |= 1 << (7 - (k % 8));
                         }

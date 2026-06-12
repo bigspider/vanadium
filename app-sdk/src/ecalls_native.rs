@@ -435,12 +435,12 @@ fn decode_pixel(
 }
 
 pub fn display_blit(
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
+    dst: u32,
+    size: u32,
     buffer: *const u8,
     buffer_len: usize,
+    src: u32,
+    src_stride: u32,
     format: u32,
 ) -> i32 {
     use common::ecall_constants::*;
@@ -448,7 +448,11 @@ pub fn display_blit(
     let Some(format) = PixelFormat::from_u32(format) else {
         return display_unknown_enum_err(format);
     };
+    let (x, y) = display_unpack_pair(dst);
+    let (w, h) = display_unpack_pair(size);
+    let (src_x, src_y) = display_unpack_pair(src);
     let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    let (src_x, src_y, src_stride) = (src_x as usize, src_y as usize, src_stride as usize);
 
     // Empty blit is a no-op success.
     if w == 0 || h == 0 {
@@ -459,7 +463,7 @@ pub fn display_blit(
 
     // Validation mirrors the VM handler exactly — same checks, same order, same
     // codes — so a contract violation fails here too, not only on a real device.
-    if x.saturating_add(w) > screen.width || y.saturating_add(h) > screen.height {
+    if x + w > screen.width || y + h > screen.height {
         return DISPLAY_ERR_OUT_OF_BOUNDS;
     }
     // The virtual screen has no hardware granularity, but the device does (NBGL's
@@ -467,8 +471,14 @@ pub fn display_blit(
     if y % 4 != 0 || h % 4 != 0 {
         return DISPLAY_ERR_ALIGNMENT;
     }
-    let stride = format.stride(w);
-    if buffer_len != format.buffer_len(w, h) {
+    // Every byte the source rectangle addresses must lie within `buffer_len`: each
+    // row spans the bytes [floor(src_x*bpp/8), ceil((src_x+w)*bpp/8)) from the start
+    // of its row. `src_stride` itself is unconstrained (rows may overlap; 0
+    // replicates a single row), so only the farthest addressed byte matters.
+    let bpp = format.bits_per_pixel();
+    let row_end = ((src_x + w) * bpp).div_ceil(8);
+    let required = (src_y + h - 1) as u64 * src_stride as u64 + row_end as u64;
+    if required > buffer_len as u64 {
         return DISPLAY_ERR_BAD_LAYOUT;
     }
 
@@ -478,7 +488,7 @@ pub fn display_blit(
     let screen_width = screen.width;
     for row in 0..h {
         for col in 0..w {
-            let intensity = decode_pixel(data, format, stride, row, col);
+            let intensity = decode_pixel(data, format, src_stride, src_y + row, src_x + col);
             screen.pixels[(y + row) * screen_width + (x + col)] = intensity;
         }
     }
@@ -1988,7 +1998,7 @@ pub fn hash_final(hash_identifier: u32, ctx: *mut u8, digest: *mut u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::ecall_constants::PixelFormat;
+    use common::ecall_constants::{display_pack_pair, PixelFormat};
 
     #[test]
     fn test_display_blit_gray4() {
@@ -1997,7 +2007,15 @@ mod tests {
 
         // 2x4 Gray4 image (stride 1 byte); first row: left pixel = 0xA, right = 0x5.
         let buf = [0xA5u8, 0x00, 0x00, 0x00];
-        let ret = display_blit(0, 0, 2, 4, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32);
+        let ret = display_blit(
+            display_pack_pair(0, 0),
+            display_pack_pair(2, 4),
+            buf.as_ptr(),
+            buf.len(),
+            0,
+            1,
+            PixelFormat::Gray4 as u32,
+        );
         assert_eq!(ret, 0);
 
         let screen = VIRTUAL_SCREEN.lock().unwrap();
@@ -2012,7 +2030,15 @@ mod tests {
         // 8x4 Mono1 image (stride 1 byte); first row bits MSB-first:
         // 0b1000_0001 -> pixel 0 and 7 set.
         let buf = [0b1000_0001u8, 0, 0, 0];
-        let ret = display_blit(0, 12, 8, 4, buf.as_ptr(), buf.len(), PixelFormat::Mono1 as u32);
+        let ret = display_blit(
+            display_pack_pair(0, 12),
+            display_pack_pair(8, 4),
+            buf.as_ptr(),
+            buf.len(),
+            0,
+            1,
+            PixelFormat::Mono1 as u32,
+        );
         assert_eq!(ret, 0);
 
         let screen = VIRTUAL_SCREEN.lock().unwrap();
@@ -2023,45 +2049,139 @@ mod tests {
     }
 
     #[test]
+    fn test_display_blit_subrect_gray4() {
+        unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
+
+        // A 4x4 Gray4 bitmap (stride 2): pixel (row, col) has intensity 4*row + col.
+        let buf = [
+            0x01u8, 0x23, // row 0: 0 1 2 3
+            0x45, 0x67, // row 1: 4 5 6 7
+            0x89, 0xAB, // row 2: 8 9 10 11
+            0xCD, 0xEF, // row 3: 12 13 14 15
+        ];
+        // Blit the 2x4 sub-rectangle whose left edge (src_x = 1) falls mid-byte.
+        let ret = display_blit(
+            display_pack_pair(8, 20),
+            display_pack_pair(2, 4),
+            buf.as_ptr(),
+            buf.len(),
+            display_pack_pair(1, 0),
+            2,
+            PixelFormat::Gray4 as u32,
+        );
+        assert_eq!(ret, 0);
+
+        let screen = VIRTUAL_SCREEN.lock().unwrap();
+        for row in 0..4 {
+            let base = (20 + row) * screen.width + 8;
+            assert_eq!(screen.pixels[base], (4 * row + 1) as u8);
+            assert_eq!(screen.pixels[base + 1], (4 * row + 2) as u8);
+        }
+    }
+
+    #[test]
+    fn test_display_blit_zero_stride_replicates_row() {
+        unsafe { std::env::set_var("VAPP_SCREEN_PPM", std::env::temp_dir().join("vapp_test.ppm")); }
+
+        // With src_stride = 0, every output row reads the same bitmap row.
+        let buf = [0x3Cu8]; // one Gray4 row: 0x3, 0xC
+        let ret = display_blit(
+            display_pack_pair(0, 28),
+            display_pack_pair(2, 4),
+            buf.as_ptr(),
+            buf.len(),
+            0,
+            0,
+            PixelFormat::Gray4 as u32,
+        );
+        assert_eq!(ret, 0);
+
+        let screen = VIRTUAL_SCREEN.lock().unwrap();
+        for row in 28..32 {
+            assert_eq!(screen.pixels[row * screen.width], 0x3);
+            assert_eq!(screen.pixels[row * screen.width + 1], 0xC);
+        }
+    }
+
+    #[test]
     fn test_display_blit_rejects_bad_input() {
         use common::ecall_constants::*;
 
         let buf = [0u8; 8];
-        // Wrong buffer length for a 2x4 Gray4 image (expects 4 bytes).
+        // A 2x4 Gray4 rect at stride 1 addresses 4 bytes; 3 readable bytes is too
+        // few. (A buffer larger than the rectangle needs is fine — it's a copy-rect.)
         assert_eq!(
-            display_blit(0, 0, 2, 4, buf.as_ptr(), buf.len(), PixelFormat::Gray4 as u32),
+            display_blit(
+                0,
+                display_pack_pair(2, 4),
+                buf.as_ptr(),
+                3,
+                0,
+                1,
+                PixelFormat::Gray4 as u32,
+            ),
+            DISPLAY_ERR_BAD_LAYOUT
+        );
+        // The stride enters the requirement: at src_stride = 4 the last of the 4
+        // rows ends at byte 3*4 + 1 = 13 > 8.
+        assert_eq!(
+            display_blit(
+                0,
+                display_pack_pair(2, 4),
+                buf.as_ptr(),
+                buf.len(),
+                0,
+                4,
+                PixelFormat::Gray4 as u32,
+            ),
             DISPLAY_ERR_BAD_LAYOUT
         );
         // Out-of-bounds rectangle.
         assert_eq!(
             display_blit(
-                NATIVE_SCREEN_WIDTH as u32,
-                0,
-                2,
-                4,
+                display_pack_pair(NATIVE_SCREEN_WIDTH as u16, 0),
+                display_pack_pair(2, 4),
                 buf.as_ptr(),
                 4,
+                0,
+                1,
                 PixelFormat::Gray4 as u32,
             ),
             DISPLAY_ERR_OUT_OF_BOUNDS
         );
         // y and height must respect the device's 4-row granularity.
         assert_eq!(
-            display_blit(0, 2, 2, 4, buf.as_ptr(), 4, PixelFormat::Gray4 as u32),
+            display_blit(
+                display_pack_pair(0, 2),
+                display_pack_pair(2, 4),
+                buf.as_ptr(),
+                4,
+                0,
+                1,
+                PixelFormat::Gray4 as u32,
+            ),
             DISPLAY_ERR_ALIGNMENT
         );
         assert_eq!(
-            display_blit(0, 0, 2, 2, buf.as_ptr(), 2, PixelFormat::Gray4 as u32),
+            display_blit(
+                0,
+                display_pack_pair(2, 2),
+                buf.as_ptr(),
+                2,
+                0,
+                1,
+                PixelFormat::Gray4 as u32,
+            ),
             DISPLAY_ERR_ALIGNMENT
         );
         // 0 is never a valid enum encoding; other unknown values may come from a
         // newer ABI revision, so they are distinguishable as UNSUPPORTED.
         assert_eq!(
-            display_blit(0, 0, 2, 4, buf.as_ptr(), 4, 0),
+            display_blit(0, display_pack_pair(2, 4), buf.as_ptr(), 4, 0, 1, 0),
             DISPLAY_ERR_INVALID_ARG
         );
         assert_eq!(
-            display_blit(0, 0, 2, 4, buf.as_ptr(), 4, 99),
+            display_blit(0, display_pack_pair(2, 4), buf.as_ptr(), 4, 0, 1, 99),
             DISPLAY_ERR_UNSUPPORTED
         );
     }

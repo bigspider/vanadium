@@ -28,7 +28,7 @@
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
-use common::ecall_constants::PixelFormat;
+use common::ecall_constants::{display_pack_pair, PixelFormat};
 use embedded_graphics::{
     pixelcolor::{Gray4, GrayColor},
     prelude::*,
@@ -143,12 +143,12 @@ impl AcceleratedDrawTarget {
 
         unsafe {
             ecalls::display_blit(
-                x0 as u32,
-                ay0 as u32,
-                w as u32,
-                h as u32,
+                display_pack_pair(x0 as u16, ay0 as u16),
+                display_pack_pair(w as u16, h as u16),
                 self.scratch.as_ptr(),
                 self.scratch.len(),
+                0,
+                stride as u32,
                 PixelFormat::Gray4 as u32,
             );
         }

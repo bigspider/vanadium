@@ -1747,27 +1747,29 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
     fn handle_display_blit<E: fmt::Debug>(
         &mut self,
         cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
+        dst: u32,
+        size: u32,
         buffer_ptr: GuestPointer,
         buffer_len: usize,
+        src: u32,
+        src_stride: u32,
         format: u32,
     ) -> Result<i32, CommEcallError> {
         let Some(format) = PixelFormat::from_u32(format) else {
             return Ok(display_unknown_enum_err(format));
         };
+        let (x, y) = display_unpack_pair(dst);
+        let (w, h) = display_unpack_pair(size);
+        let (src_x, src_y) = display_unpack_pair(src);
 
         // Empty blit is a no-op success.
         if w == 0 || h == 0 {
             return Ok(0);
         }
 
-        // Reject rectangles that fall outside the physical screen.
-        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
-            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
-        {
+        // Reject rectangles that fall outside the physical screen. The unpacked
+        // components are at most 0xffff each, so the sums cannot overflow.
+        if x + w > SCREEN_WIDTH as u32 || y + h > SCREEN_HEIGHT as u32 {
             return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
         }
 
@@ -1784,8 +1786,20 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
             return Ok(DISPLAY_ERR_ALIGNMENT);
         }
 
-        // The advertised length must match the geometry exactly.
-        if buffer_len != format.buffer_len(w as usize, h as usize) {
+        // Every byte the source rectangle addresses must lie within `buffer_len`.
+        // The rectangle's left edge may fall mid-byte: each row spans the bytes
+        // [row_first_byte, row_first_byte + row_span) from the start of its row,
+        // where `first_px` is the pixel offset of the edge within its byte.
+        // `src_stride` itself is unconstrained (rows may overlap; 0 replicates a
+        // single row), so only the farthest addressed byte matters. Computed in
+        // u64: the inputs are 16/32-bit so the products can exceed u32.
+        let bpp = format.bits_per_pixel() as u64;
+        let first_px = (src_x as u64 % (8 / bpp)) as usize;
+        let row_first_byte = (src_x as u64 * bpp) / 8;
+        let row_span = format.stride(first_px + w as usize);
+        let required =
+            (src_y + h - 1) as u64 * src_stride as u64 + row_first_byte + row_span as u64;
+        if required > buffer_len as u64 {
             return Ok(DISPLAY_ERR_BAD_LAYOUT);
         }
 
@@ -1798,8 +1812,7 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         // Since the screen height and `h` are multiples of 4, every band is exactly
         // 4 rows. `read_buffer` transparently handles reads crossing page boundaries.
         const BAND_ROWS: usize = 4;
-        let row_stride = format.stride(w as usize);
-        let band_len = BAND_ROWS * row_stride;
+        let band_len = BAND_ROWS * row_span;
         let out_len = (w as usize * BAND_ROWS * format.bits_per_pixel() + 7) / 8;
         // Single allocation split into the input (row-major) and output (column-major)
         // scratch buffers, to avoid heap fragmentation in the tiny VM heap.
@@ -1809,22 +1822,27 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
         let mut band_y = 0usize;
         while band_y < h as usize {
             let bh = core::cmp::min(BAND_ROWS, h as usize - band_y);
-            let in_len = bh * row_stride;
-            let src = buffer_ptr
-                .0
-                .checked_add((band_y * row_stride) as u32)
-                .ok_or(CommEcallError::InvalidParameters(
-                    "display_blit: buffer address overflow",
-                ))?;
-            cpu.get_segment::<E>(src)?
-                .read_buffer(src, &mut band_buf[..in_len])?;
+            // Bitmap rows are not contiguous at `row_span` (they sit `src_stride`
+            // apart in the bitmap), so read each row of the band individually.
+            for row in 0..bh {
+                let row_offset =
+                    (src_y as usize + band_y + row) as u64 * src_stride as u64 + row_first_byte;
+                // `required <= buffer_len <= u32::MAX` was checked above, and every
+                // row offset is below `required`, so the cast cannot truncate.
+                let row_addr = buffer_ptr.0.checked_add(row_offset as u32).ok_or(
+                    CommEcallError::InvalidParameters("display_blit: buffer address overflow"),
+                )?;
+                cpu.get_segment::<E>(row_addr)?
+                    .read_buffer(row_addr, &mut band_buf[row * row_span..][..row_span])?;
+            }
             self.ux_handler.blit_band(
                 x,
                 y + band_y as u32,
                 w,
                 bh as u32,
+                first_px,
                 format,
-                &band_buf[..in_len],
+                &band_buf[..bh * row_span],
                 out_buf,
             )?;
             band_y += bh;
@@ -2113,10 +2131,10 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     cpu,
                     reg!(A0),
                     reg!(A1),
-                    reg!(A2),
-                    reg!(A3),
-                    GPreg!(A4),
-                    reg!(A5) as usize,
+                    GPreg!(A2),
+                    reg!(A3) as usize,
+                    reg!(A4),
+                    reg!(A5),
                     reg!(A6),
                 )? as u32;
             }

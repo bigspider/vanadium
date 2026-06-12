@@ -132,7 +132,18 @@ forward_to_ecall! {
     ///   `size_of::<EventData>()` (16) bytes.
     pub unsafe fn get_event(data: *mut EventData) -> u32;
 
-    /// Draws a rectangle of pixels from guest memory into the screen framebuffer.
+    /// Copies a rectangle of pixels out of a source bitmap in guest memory into the
+    /// screen framebuffer (a classic copy-rect).
+    ///
+    /// The source is a row-major, top-left-origin bitmap of which `[src_x, src_x+w) ×
+    /// [src_y, src_y+h)` is drawn at destination `(x, y)`. Because the source rectangle
+    /// is addressed inside a larger bitmap (`src`, `src_stride`), flushing a dirty
+    /// sub-rectangle of a full-frame guest framebuffer needs no repacking and no
+    /// temporary allocation; the degenerate case of an exactly-packed buffer is
+    /// `src = 0, src_stride = PixelFormat::stride(w)`. There is no alignment
+    /// requirement on the source rectangle (its left edge may fall mid-byte), and
+    /// `src_stride` is unconstrained — rows may overlap, and `src_stride = 0`
+    /// replicates a single row `h` times.
     ///
     /// This only updates the framebuffer; it does **not** push the pixels to the
     /// physical panel. Call [`display_refresh`] once after one or more `display_blit`
@@ -140,19 +151,24 @@ forward_to_ecall! {
     /// banded full-screen redraw issue a single (expensive) panel refresh.
     ///
     /// # Parameters
-    /// - `x`, `y`: Top-left corner of the destination rectangle, in screen pixels.
-    /// - `w`, `h`: Width and height of the rectangle, in pixels.
-    /// - `buffer`: Pointer to the pixel data, encoded according to `format`.
-    /// - `buffer_len`: Length of `buffer` in bytes. Must equal
-    ///   `PixelFormat::buffer_len(w, h)` for the given `format`.
-    /// - `format`: A [`common::ecall_constants::PixelFormat`] value describing `buffer`.
+    /// - `dst`: Packed `(x << 16) | y` destination top-left, in screen pixels (see
+    ///   [`display_pack_pair`](common::ecall_constants::display_pack_pair)).
+    /// - `size`: Packed `(w << 16) | h` rectangle size, in pixels.
+    /// - `buffer`: Pointer to the source bitmap, encoded according to `format`.
+    /// - `buffer_len`: Readable bytes at `buffer`. Every byte the source rectangle
+    ///   addresses must lie within it:
+    ///   `(src_y + h - 1) * src_stride + ceil((src_x + w) * bpp / 8) <= buffer_len`.
+    /// - `src`: Packed `(x << 16) | y` top-left of the source rectangle inside the bitmap.
+    /// - `src_stride`: Bytes between consecutive bitmap rows.
+    /// - `format`: A [`common::ecall_constants::PixelFormat`] value describing the bitmap.
     ///
     /// # Returns
     /// 0 on success; a negative `DISPLAY_ERR_*` code on error
     /// ([`DISPLAY_ERR_INVALID_ARG`] / [`DISPLAY_ERR_UNSUPPORTED`] for the format,
-    /// [`DISPLAY_ERR_OUT_OF_BOUNDS`], [`DISPLAY_ERR_ALIGNMENT`] for the y/h
-    /// granularity, [`DISPLAY_ERR_BAD_LAYOUT`] for a wrong `buffer_len`).
-    /// Parameter errors never abort the V-App.
+    /// [`DISPLAY_ERR_OUT_OF_BOUNDS`] for a destination outside the screen,
+    /// [`DISPLAY_ERR_ALIGNMENT`] for a destination violating the device's display
+    /// granularity, [`DISPLAY_ERR_BAD_LAYOUT`] when the source rectangle reaches past
+    /// `buffer_len`). Parameter errors never abort the V-App.
     ///
     /// [`DISPLAY_ERR_INVALID_ARG`]: common::ecall_constants::DISPLAY_ERR_INVALID_ARG
     /// [`DISPLAY_ERR_UNSUPPORTED`]: common::ecall_constants::DISPLAY_ERR_UNSUPPORTED
@@ -163,12 +179,12 @@ forward_to_ecall! {
     /// # Safety
     /// - `buffer` must be a valid pointer to at least `buffer_len` bytes of readable memory.
     pub unsafe fn display_blit(
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
+        dst: u32,
+        size: u32,
         buffer: *const u8,
         buffer_len: usize,
+        src: u32,
+        src_stride: u32,
         format: u32,
     ) -> i32;
 

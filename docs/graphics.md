@@ -91,24 +91,37 @@ The blit model keeps the stable surface tiny and lets the SDK abstraction evolve
 pub const ECALL_DISPLAY_BLIT: u32 = 40;
 
 display_blit(
-    x: u32, y: u32,        // top-left of the destination rectangle, in screen pixels
-    w: u32, h: u32,        // size of the rectangle, in pixels
-    buffer: *const u8,     // pixel data, in guest memory
-    buffer_len: usize,     // length of `buffer` in bytes
-    format: u32,           // a PixelFormat value describing `buffer`
+    dst: u32,              // (x << 16) | y — destination top-left, in screen pixels
+    size: u32,             // (w << 16) | h — size of the rectangle, in pixels
+    buffer: *const u8,     // a source bitmap in guest memory, row-major, top-left origin
+    buffer_len: usize,     // readable bytes at `buffer`
+    src: u32,              // (x << 16) | y — top-left of the source rect inside the bitmap
+    src_stride: u32,       // bytes between consecutive bitmap rows
+    format: u32,           // a PixelFormat value describing the bitmap
 ) -> i32                   // 0 on success, a negative DISPLAY_ERR_* code on error
 ```
 
+This is a classic **copy-rect**: the drawn rectangle is addressed *inside a larger
+source bitmap* via `src`/`src_stride`, so flushing a dirty sub-rectangle of a
+full-frame guest framebuffer passes the framebuffer directly — no repacking, no
+allocation. An exactly-packed buffer is the degenerate case
+`src = 0, src_stride = stride(format, w)`. The source rectangle has no alignment
+constraint (its left edge may fall mid-byte, which costs nothing because the band
+transpose below addresses every pixel individually), and `src_stride` is
+unconstrained — rows may overlap, and `src_stride = 0` replicates one row `h` times.
 7 arguments fit comfortably in the `a0..a7` ECALL ABI.
 
 The VM handler:
 
-1. validates that `[x, x+w) × [y, y+h)` lies within the device screen
-   (`DEVICE_PROPERTY_SCREEN_SIZE`);
-2. validates that `buffer_len == stride(format, w) * h`;
-3. reads the rectangle out of guest memory in **horizontal bands** (the
-   outsourced/paged `read_buffer` crosses page boundaries transparently), and for
-   each band draws one `nbgl_frontDrawImage`, then refreshes the dirty rectangle.
+1. validates that the destination rectangle lies within the device screen
+   (`DEVICE_PROPERTY_SCREEN_SIZE`) and meets the display granularity;
+2. validates that every byte the source rectangle addresses lies within
+   `buffer_len`: `(src_y + h - 1) * src_stride + ceil((src_x + w) * bpp / 8)
+   <= buffer_len`;
+3. reads the rectangle out of guest memory in **horizontal bands**, row by row at
+   `src_stride` offsets (the outsourced/paged `read_buffer` crosses page boundaries
+   transparently), and for each band draws one `nbgl_frontDrawImage`, then refreshes
+   the dirty rectangle.
 
 The band layout is dictated by two NBGL/hardware constraints that are easy to miss
 (they are documented in the SDK but not enforced by the Speculos reference driver,
@@ -829,11 +842,12 @@ backend is the strictest implementation.**
 
 ## Migration checklist
 
-- [ ] `common`: renumber ECALLs and enums, error codes, new properties, feature bits
+- [x] `common`: renumber ECALLs and enums, error codes, new properties, feature bits
       (one breaking sweep), plus the ECALL-number uniqueness guard
-- [ ] `vm`: `i32` status returns; all parameter errors soft; granularity/limits served
+- [x] `vm`: `i32` status returns; all parameter errors soft; granularity/limits served
       from per-device constants via the new properties; `get_device_property` soft-fail
-- [ ] `vm`: blit `src`/`src_stride` addressing; Gray4↔Mono1 conversion in `blit_band`
+- [x] `vm`: blit packed coordinates + `src`/`src_stride` addressing
+- [ ] `vm`: Gray4↔Mono1 conversion in `blit_band`
 - [ ] `vm`: RGB quantization for fill/text; self-aligning refresh; text clipping
 - [ ] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker
 - [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`

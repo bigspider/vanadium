@@ -338,7 +338,7 @@ ecall2!(xrecv, ECALL_XRECV, (buffer: *mut u8), (size: usize), usize);
 ecall2v!(print, ECALL_PRINT, (buffer: *const u8), (size: usize));
 
 ecall1!(get_event, ECALL_GET_EVENT, (data: *mut EventData), u32);
-ecall7!(display_blit, ECALL_DISPLAY_BLIT, (x: u32), (y: u32), (w: u32), (h: u32), (buffer: *const u8), (buffer_len: usize), (format: u32), i32);
+ecall7!(display_blit, ECALL_DISPLAY_BLIT, (dst: u32), (size: u32), (buffer: *const u8), (buffer_len: usize), (src: u32), (src_stride: u32), (format: u32), i32);
 ecall5!(display_refresh, ECALL_DISPLAY_REFRESH, (x: u32), (y: u32), (w: u32), (h: u32), (mode: u32), i32);
 ecall5!(display_fill_rect, ECALL_DISPLAY_FILL_RECT, (x: u32), (y: u32), (w: u32), (h: u32), (color: u32), i32);
 ecall7!(display_draw_text, ECALL_DISPLAY_DRAW_TEXT, (x: u32), (y: u32), (w: u32), (h: u32), (text: *const u8), (text_len: usize), (color_font: u32), i32);

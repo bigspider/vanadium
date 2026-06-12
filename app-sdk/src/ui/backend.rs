@@ -7,7 +7,7 @@
 
 use alloc::boxed::Box;
 
-use common::ecall_constants::PixelFormat;
+use common::ecall_constants::{display_pack_pair, PixelFormat};
 
 use crate::ecalls;
 use crate::ux::screen::Screen;
@@ -156,14 +156,16 @@ impl Renderer for ScreenRenderer {
         if r.is_empty() {
             return;
         }
+        // `pixels` is packed for the full `area`; clipping just offsets the source
+        // rectangle within it (the copy-rect blit reads at the area's stride).
         unsafe {
             ecalls::display_blit(
-                r.x as u32,
-                r.y as u32,
-                r.w as u32,
-                r.h as u32,
+                display_pack_pair(r.x as u16, r.y as u16),
+                display_pack_pair(r.w as u16, r.h as u16),
                 pixels.as_ptr(),
                 pixels.len(),
+                display_pack_pair((r.x - area.x) as u16, (r.y - area.y) as u16),
+                format.stride(area.w as usize) as u32,
                 format as u32,
             );
         }
