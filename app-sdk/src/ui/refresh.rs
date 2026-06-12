@@ -16,21 +16,15 @@ pub trait RefreshPolicy {
     fn present(&mut self, screen: &Screen, dirty: Rect, hint: ContentHint);
 }
 
-// Aligns a rectangle to the panel's 4-row vertical granularity and clips it to the screen,
-// returning `(x, y, w, h)` as `u16`. Returns `None` if the result is empty.
-fn align4_clip(dirty: Rect, sw: i32, sh: i32) -> Option<(u16, u16, u16, u16)> {
+// Clips a rectangle to the screen, returning `(x, y, w, h)` as `u16`, or `None` if
+// empty. Clipping is only for the i32 → u16 conversion: alignment is the VM's job
+// (`display_refresh` expands the rectangle to the display granularity itself).
+fn clip_rect(dirty: Rect, sw: i32, sh: i32) -> Option<(u16, u16, u16, u16)> {
     let r = dirty.clip(sw, sh);
     if r.is_empty() {
         return None;
     }
-    let y0 = r.y & !3;
-    let y1 = ((r.bottom() + 3) & !3).min(sh);
-    let x0 = r.x;
-    let x1 = r.right();
-    if x1 <= x0 || y1 <= y0 {
-        return None;
-    }
-    Some((x0 as u16, y0 as u16, (x1 - x0) as u16, (y1 - y0) as u16))
+    Some((r.x as u16, r.y as u16, r.w as u16, r.h as u16))
 }
 
 /// Refresh policy for slow, ghosting-prone reflective panels (Stax/Flex):
@@ -101,7 +95,7 @@ impl RefreshPolicy for EinkPolicy {
             return;
         }
 
-        let Some((x, y, w, h)) = align4_clip(dirty, self.width, self.height) else {
+        let Some((x, y, w, h)) = clip_rect(dirty, self.width, self.height) else {
             return;
         };
         let mode = if self.format == PixelFormat::Mono1 {
@@ -134,7 +128,7 @@ impl ImmediatePolicy {
 
 impl RefreshPolicy for ImmediatePolicy {
     fn present(&mut self, screen: &Screen, dirty: Rect, _hint: ContentHint) {
-        if let Some((x, y, w, h)) = align4_clip(dirty, self.width, self.height) {
+        if let Some((x, y, w, h)) = clip_rect(dirty, self.width, self.height) {
             screen.refresh_area(x, y, w, h, RefreshMode::FullQuality);
         }
     }

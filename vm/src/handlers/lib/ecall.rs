@@ -120,6 +120,17 @@ const DISPLAY_GRANULARITY: DisplayGranularity = DisplayGranularity {
     h: 4,
 };
 
+// handle_display_refresh's self-aligning expansion aligns the rectangle's *end
+// coordinates* to the size granularity, which yields an aligned width/height only if
+// the position and size granularities agree per axis (true of every hardware
+// constraint so far); same for clipping to the screen, which must itself be aligned.
+const _: () = assert!(
+    DISPLAY_GRANULARITY.x == DISPLAY_GRANULARITY.w
+        && DISPLAY_GRANULARITY.y == DISPLAY_GRANULARITY.h
+        && SCREEN_WIDTH % DISPLAY_GRANULARITY.w as u16 == 0
+        && SCREEN_HEIGHT % DISPLAY_GRANULARITY.h as u16 == 0
+);
+
 // BIP32 supports up to 255, but we don't want that many, and it would be very slow anyway
 const MAX_BIP32_PATH: usize = 16;
 
@@ -1855,24 +1866,37 @@ impl<'a, const N: usize> CommEcallHandler<'a, N> {
     fn handle_display_refresh<E: fmt::Debug>(
         &mut self,
         _cpu: &mut Cpu<OutsourcedMemory<'_, N>>,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
+        pos: u32,
+        size: u32,
         mode: u32,
     ) -> Result<i32, CommEcallError> {
         let Some(mode) = RefreshMode::from_u32(mode) else {
             return Ok(display_unknown_enum_err(mode));
         };
+        let (x, y) = display_unpack_pair(pos);
+        let (w, h) = display_unpack_pair(size);
         if w == 0 || h == 0 {
             return Ok(0);
         }
-        if x.checked_add(w).map_or(true, |r| r > SCREEN_WIDTH as u32)
-            || y.checked_add(h).map_or(true, |b| b > SCREEN_HEIGHT as u32)
-        {
-            return Ok(DISPLAY_ERR_OUT_OF_BOUNDS);
+
+        // The rectangle is advisory: expand it outward to the display granularity and
+        // clip it to the screen, rather than rejecting. Unlike a blit — where expansion
+        // would require pixels the caller didn't provide — refreshing a slightly larger
+        // area is harmless: the framebuffer already holds the correct pixels. The end
+        // coordinates are aligned to the size granularity, which keeps width/height
+        // aligned because position and size granularities agree per axis and the screen
+        // dimensions are themselves aligned (the const assertion at DISPLAY_GRANULARITY).
+        // The unpacked components are at most 0xffff each, so no arithmetic overflows.
+        let g = DISPLAY_GRANULARITY;
+        let x0 = x - x % g.x as u32;
+        let y0 = y - y % g.y as u32;
+        let x1 = (x + w).next_multiple_of(g.w as u32).min(SCREEN_WIDTH as u32);
+        let y1 = (y + h).next_multiple_of(g.h as u32).min(SCREEN_HEIGHT as u32);
+        if x0 >= x1 || y0 >= y1 {
+            // The rectangle lies entirely off-screen: clips to nothing, a no-op success.
+            return Ok(0);
         }
-        self.ux_handler.blit_refresh(x, y, w, h, mode)?;
+        self.ux_handler.blit_refresh(x0, y0, x1 - x0, y1 - y0, mode)?;
         Ok(0)
     }
 
@@ -2144,8 +2168,6 @@ impl<'a, const N: usize> EcallHandler for CommEcallHandler<'a, N> {
                     reg!(A0),
                     reg!(A1),
                     reg!(A2),
-                    reg!(A3),
-                    reg!(A4),
                 )? as u32;
             }
             ECALL_DISPLAY_FILL_RECT => {

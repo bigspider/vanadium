@@ -23,7 +23,7 @@ delegate_ecall!(print, (buffer: *const u8), (size: usize));
 
 delegate_ecall!(get_event, u32, (data: *mut EventData));
 delegate_ecall!(display_blit, i32, (dst: u32), (size: u32), (buffer: *const u8), (buffer_len: usize), (src: u32), (src_stride: u32), (format: u32));
-delegate_ecall!(display_refresh, i32, (x: u32), (y: u32), (w: u32), (h: u32), (mode: u32));
+delegate_ecall!(display_refresh, i32, (pos: u32), (size: u32), (mode: u32));
 delegate_ecall!(display_fill_rect, i32, (x: u32), (y: u32), (w: u32), (h: u32), (color: u32));
 delegate_ecall!(display_draw_text, i32, (x: u32), (y: u32), (w: u32), (h: u32), (text: *const u8), (text_len: usize), (color_font: u32));
 delegate_ecall!(display_text_width, i32, (font: u32), (text: *const u8), (text_len: usize));

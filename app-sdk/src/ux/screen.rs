@@ -27,7 +27,7 @@
 //! ```
 
 use common::ecall_constants::{
-    PixelFormat, DEVICE_PROPERTY_PIXEL_FORMAT, DEVICE_PROPERTY_SCREEN_SIZE,
+    display_pack_pair, PixelFormat, DEVICE_PROPERTY_PIXEL_FORMAT, DEVICE_PROPERTY_SCREEN_SIZE,
 };
 
 use crate::ecalls;
@@ -124,10 +124,15 @@ impl Screen {
 
     /// Pushes a rectangle to the panel using the given [`RefreshMode`]. Use a partial /
     /// fast mode for small or monochrome updates to keep the (expensive) panel refresh
-    /// cheap.
+    /// cheap. No alignment is needed: the VM expands the rectangle to the display
+    /// granularity and clips it to the screen itself.
     pub fn refresh_area(&self, x: u16, y: u16, w: u16, h: u16, mode: RefreshMode) -> bool {
         unsafe {
-            ecalls::display_refresh(x as u32, y as u32, w as u32, h as u32, mode as u32) == 0
+            ecalls::display_refresh(
+                display_pack_pair(x, y),
+                display_pack_pair(w, h),
+                mode as u32,
+            ) == 0
         }
     }
 

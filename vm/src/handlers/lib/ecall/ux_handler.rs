@@ -504,8 +504,11 @@ impl UxHandler {
         Ok(())
     }
 
-    /// Pushes a previously drawn rectangle to the physical panel, using the requested
-    /// [`RefreshMode`](common::ecall_constants::RefreshMode).
+    /// Pushes a previously drawn rectangle to the physical panel.
+    ///
+    /// The [`RefreshMode`](common::ecall_constants::RefreshMode) is advisory: it is
+    /// mapped to the nearest mode this panel supports, so every defined mode succeeds
+    /// on every device.
     pub fn blit_refresh(
         &mut self,
         x: u32,
@@ -514,7 +517,7 @@ impl UxHandler {
         h: u32,
         mode: common::ecall_constants::RefreshMode,
     ) -> Result<(), CommEcallError> {
-        use common::ecall_constants::RefreshMode;
+        use common::ecall_constants::{PixelFormat, RefreshMode};
 
         extern "C" {
             fn nbgl_frontRefreshArea(
@@ -524,11 +527,22 @@ impl UxHandler {
             );
         }
 
-        let nbgl_mode = match mode {
-            RefreshMode::FullQuality => sys::FULL_COLOR_REFRESH,
-            RefreshMode::Partial => sys::FULL_COLOR_PARTIAL_REFRESH,
-            RefreshMode::Mono => sys::BLACK_AND_WHITE_REFRESH,
-            RefreshMode::MonoFast => sys::BLACK_AND_WHITE_FAST_REFRESH,
+        let nbgl_mode = match super::NATIVE_PIXEL_FORMAT {
+            PixelFormat::Gray4 => match mode {
+                RefreshMode::FullQuality => sys::FULL_COLOR_REFRESH,
+                RefreshMode::Partial => sys::FULL_COLOR_PARTIAL_REFRESH,
+                RefreshMode::Mono => sys::BLACK_AND_WHITE_REFRESH,
+                RefreshMode::MonoFast => sys::BLACK_AND_WHITE_FAST_REFRESH,
+            },
+            // A monochrome panel has no full-color refresh: the quality-preserving
+            // modes all land on the plain black-&-white refresh, the speed-priority
+            // one on its fast variant.
+            PixelFormat::Mono1 => match mode {
+                RefreshMode::FullQuality | RefreshMode::Partial | RefreshMode::Mono => {
+                    sys::BLACK_AND_WHITE_REFRESH
+                }
+                RefreshMode::MonoFast => sys::BLACK_AND_WHITE_FAST_REFRESH,
+            },
         };
 
         let area = sys::nbgl_area_t {

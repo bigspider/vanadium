@@ -499,7 +499,7 @@ pub fn display_blit(
     0
 }
 
-pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> i32 {
+pub fn display_refresh(pos: u32, size: u32, mode: u32) -> i32 {
     use common::ecall_constants::*;
 
     // The refresh mode only affects the physical e-ink panel; on the virtual screen we
@@ -507,14 +507,15 @@ pub fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> i32 {
     if RefreshMode::from_u32(mode).is_none() {
         return display_unknown_enum_err(mode);
     }
-    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    let (_x, _y) = display_unpack_pair(pos);
+    let (w, h) = display_unpack_pair(size);
     if w == 0 || h == 0 {
         return 0;
     }
+    // The rectangle is advisory (the VM self-aligns and clips it, never erroring), and
+    // the virtual screen always presents the whole framebuffer, so there is nothing to
+    // validate here.
     let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
-    if x.saturating_add(w) > screen.width || y.saturating_add(h) > screen.height {
-        return DISPLAY_ERR_OUT_OF_BOUNDS;
-    }
 
     // Persist a viewable copy of the whole screen.
     let path = std::env::var("VAPP_SCREEN_PPM").unwrap_or_else(|_| "vapp_screen.ppm".into());

@@ -291,8 +291,14 @@ see the [error model](#common-conventions) in the v2 proposal, already in effect
 
 ### Refresh modes
 
-`display_refresh`'s last argument is now a [`RefreshMode`](../common/src/ecall_constants.rs)
-(`FullQuality` / `Partial` / `Mono` / `MonoFast`) rather than a pixel format.
+`display_refresh(pos, size, mode)` takes packed `(x << 16) | y` / `(w << 16) | h`
+coordinates and a [`RefreshMode`](../common/src/ecall_constants.rs)
+(`FullQuality` / `Partial` / `Mono` / `MonoFast`). Both the rectangle and the mode are
+**advisory**: the VM expands the rectangle outward to the display granularity and clips
+it to the screen itself (no alignment to get right, no `OUT_OF_BOUNDS`; a rectangle
+that clips to nothing is a no-op success), and the device maps the mode to the nearest
+thing its panel supports (a monochrome panel treats `FullQuality` as `Mono`), so every
+defined mode succeeds on every device.
 The panel refresh is the expensive part of an e-ink update, so picking a partial or fast
 black-&-white mode for small or monochrome updates is a real performance lever. The SDK
 defaults to `FullQuality` on grayscale screens and `Mono` on monochrome ones.
@@ -847,8 +853,9 @@ backend is the strictest implementation.**
 - [x] `vm`: `i32` status returns; all parameter errors soft; granularity/limits served
       from per-device constants via the new properties; `get_device_property` soft-fail
 - [x] `vm`: blit packed coordinates + `src`/`src_stride` addressing
+- [x] `vm`: self-aligning, clipping refresh with advisory modes (SDK `align4_clip` deleted)
 - [ ] `vm`: Gray4↔Mono1 conversion in `blit_band`
-- [ ] `vm`: RGB quantization for fill/text; self-aligning refresh; text clipping
+- [ ] `vm`: RGB quantization for fill/text; text clipping
 - [ ] `vm`: event-queue coalescing fix (Pressed-onto-Pressed only); input-before-ticker
 - [ ] `app-sdk`: trait + riscv/native delegates; `Capabilities` from `FEATURES`
       (delete the `has_page_api()` device table); `Color` named constants over RGB;

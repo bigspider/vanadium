@@ -197,10 +197,8 @@ impl Canvas {
         self.draw_area(x, y, w, h)
             && unsafe {
                 ecalls::display_refresh(
-                    x as u32,
-                    y as u32,
-                    w as u32,
-                    h as u32,
+                    display_pack_pair(x as u16, y as u16),
+                    display_pack_pair(w as u16, h as u16),
                     default_refresh_mode(self.format) as u32,
                 ) == 0
             }
@@ -309,10 +307,8 @@ where
     }
     ok && unsafe {
         ecalls::display_refresh(
-            0,
-            0,
-            width as u32,
-            height as u32,
+            display_pack_pair(0, 0),
+            display_pack_pair(width as u16, height as u16),
             default_refresh_mode(format) as u32,
         ) == 0
     }

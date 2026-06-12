@@ -191,20 +191,39 @@ forward_to_ecall! {
     /// Pushes a previously drawn rectangle (see [`display_blit`] / the accelerated
     /// draw ops) to the physical panel.
     ///
+    /// The rectangle is advisory: the VM expands it outward to the device's display
+    /// granularity and clips it to the screen itself — refreshing a slightly larger
+    /// area is harmless because the framebuffer already holds the correct pixels, so
+    /// unlike [`display_blit`] there is no alignment for the caller to get right and
+    /// no `OUT_OF_BOUNDS`/`ALIGNMENT` error. A rectangle that clips to nothing is a
+    /// no-op success.
+    ///
+    /// The mode is advisory too: the device maps a requested [`RefreshMode`] to the
+    /// nearest thing its panel supports (a monochrome panel treats `FullQuality` as
+    /// `Mono`; a fast LCD may ignore modes entirely), so every *defined* mode
+    /// succeeds on every device. Picking a cheaper mode for small or monochrome
+    /// updates is the main performance lever on e-ink panels.
+    ///
     /// # Parameters
-    /// - `x`, `y`, `w`, `h`: The rectangle to refresh, in screen pixels.
-    /// - `mode`: A [`common::ecall_constants::RefreshMode`] value selecting the panel
-    ///   refresh mode. Full-color modes give the best quality; partial / fast B&W
-    ///   modes are much cheaper for small or monochrome updates.
+    /// - `pos`: Packed `(x << 16) | y` top-left of the rectangle, in screen pixels
+    ///   (see [`display_pack_pair`](common::ecall_constants::display_pack_pair)).
+    /// - `size`: Packed `(w << 16) | h` rectangle size, in pixels.
+    /// - `mode`: A [`RefreshMode`] value selecting the panel refresh mode.
     ///
     /// # Returns
-    /// 0 on success; a negative `DISPLAY_ERR_*` code on error (unknown mode,
-    /// out-of-bounds rectangle). Parameter errors never abort the V-App.
+    /// 0 on success; a negative `DISPLAY_ERR_*` code only for a malformed or
+    /// unknown `mode` ([`DISPLAY_ERR_INVALID_ARG`] for 0, [`DISPLAY_ERR_UNSUPPORTED`]
+    /// for a value newer than this VM — probe-able). Parameter errors never abort
+    /// the V-App.
+    ///
+    /// [`RefreshMode`]: common::ecall_constants::RefreshMode
+    /// [`DISPLAY_ERR_INVALID_ARG`]: common::ecall_constants::DISPLAY_ERR_INVALID_ARG
+    /// [`DISPLAY_ERR_UNSUPPORTED`]: common::ecall_constants::DISPLAY_ERR_UNSUPPORTED
     ///
     /// # Safety
     /// This call does not dereference any pointer, but is kept `unsafe` for
     /// consistency with the other graphics ECALLs.
-    pub unsafe fn display_refresh(x: u32, y: u32, w: u32, h: u32, mode: u32) -> i32;
+    pub unsafe fn display_refresh(pos: u32, size: u32, mode: u32) -> i32;
 
     /// Fills a rectangle with a solid palette color, directly in the OS framebuffer.
     ///
