@@ -7,24 +7,28 @@ pub const ECALL_PRINT: u32 = 5;
 // device handling, events, and UX
 
 pub const ECALL_GET_EVENT: u32 = 10;
+pub const ECALL_GET_DEVICE_PROPERTY: u32 = 15;
+
+// Display ECALLs. The block 40..=63 is dedicated to display operations.
+
 // Low-level graphics: blit a rectangle of pixels from guest memory to the screen.
-pub const ECALL_DISPLAY_BLIT: u32 = 12;
+pub const ECALL_DISPLAY_BLIT: u32 = 40;
 // Low-level graphics: push a previously drawn rectangle to the physical panel.
-pub const ECALL_DISPLAY_REFRESH: u32 = 13;
+pub const ECALL_DISPLAY_REFRESH: u32 = 41;
 // Accelerated drawing: fill a rectangle with a solid palette color directly in the
 // OS framebuffer (no guest framebuffer, no per-pixel work). See `Color`.
-pub const ECALL_DISPLAY_FILL_RECT: u32 = 14;
-pub const ECALL_GET_DEVICE_PROPERTY: u32 = 15;
+pub const ECALL_DISPLAY_FILL_RECT: u32 = 42;
 // Accelerated drawing: draw a UTF-8 string with an OS font directly in the framebuffer.
-pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 16;
+pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 43;
 // Text measurement with an OS font, so a UI can lay out text without rasterizing it in
 // the guest. `text_width` returns the rendered width in pixels of a UTF-8 string;
 // `font_metrics` returns packed `(height << 16) | line_height` for a `Font`.
-pub const ECALL_DISPLAY_TEXT_WIDTH: u32 = 17;
-pub const ECALL_DISPLAY_FONT_METRICS: u32 = 18;
-// Note: 19 was reserved for rounded-rect / QR-code ops, but the backing NBGL drawing
-// functions (`nbgl_drawRoundedRect`, `nbgl_drawQrCode`) live in `nbgl_draw.c`, which is
-// neither a BOLOS syscall nor compiled into the VM, so they are not yet available. Only
+pub const ECALL_DISPLAY_TEXT_WIDTH: u32 = 44;
+pub const ECALL_DISPLAY_FONT_METRICS: u32 = 45;
+// 46..=63 are reserved for future display ops (icons, lines, rounded rects, QR codes,
+// compressed images, ...). Note: rounded-rect / QR / icon ops need NBGL functions
+// (`nbgl_drawRoundedRect`, `nbgl_drawQrCode`, `nbgl_drawIcon` in `nbgl_draw.c`) that are
+// neither BOLOS syscalls nor compiled into the VM, so they are not available yet; only
 // syscall-backed primitives (`nbgl_frontDrawRect`, `nbgl_drawText`) are exposed for now.
 
 // Constants used for GET_DEVICE_PROPERTY

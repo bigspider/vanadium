@@ -88,7 +88,7 @@ The blit model keeps the stable surface tiny and lets the SDK abstraction evolve
 
 ```rust
 // common/src/ecall_constants.rs
-pub const ECALL_DISPLAY_BLIT: u32 = 12;
+pub const ECALL_DISPLAY_BLIT: u32 = 40;
 
 display_blit(
     x: u32, y: u32,        // top-left of the destination rectangle, in screen pixels
@@ -247,8 +247,8 @@ descriptor-shaped, glyphs/icons are native, and only changed regions are refresh
 
 ```rust
 // common/src/ecall_constants.rs
-pub const ECALL_DISPLAY_FILL_RECT: u32 = 14;  // -> nbgl_frontDrawRect
-pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 16;  // -> nbgl_drawText (OS fonts)
+pub const ECALL_DISPLAY_FILL_RECT: u32 = 42;  // -> nbgl_frontDrawRect
+pub const ECALL_DISPLAY_DRAW_TEXT: u32 = 43;  // -> nbgl_drawText (OS fonts)
 
 display_fill_rect(x, y, w, h, color) -> u32;
 display_draw_text(x, y, w, h, text, text_len, color_font) -> u32;
@@ -308,10 +308,10 @@ rendering and the color palette must be validated on real hardware.**
 ## Numbering & stabilization
 
 Unlike `show_page` / `show_step` (which are genuinely Ledger-specific and live in
-the vendor range 192–255), the blit concept is generic and target-portable, so
-`ECALL_DISPLAY_BLIT` lives in the general "device handling, events, and UX" block.
-This positions low-level graphics as part of the **core** ECALL set the project
-intends to stabilize.
+the vendor range 192–255), the display ops are generic and target-portable: they are
+part of the **core** ECALL set the project intends to stabilize, and live in a
+dedicated block (40–63, with room reserved for the planned icon / line / rounded-rect
+/ QR / compressed-image ops — see the [v2 numbering](#numbering) section).
 
 ## Native / emulator backend
 
