@@ -518,10 +518,10 @@ impl UxHandler {
         }
 
         let nbgl_mode = match mode {
-            RefreshMode::FullColor => sys::FULL_COLOR_REFRESH,
+            RefreshMode::FullQuality => sys::FULL_COLOR_REFRESH,
             RefreshMode::Partial => sys::FULL_COLOR_PARTIAL_REFRESH,
-            RefreshMode::BlackWhite => sys::BLACK_AND_WHITE_REFRESH,
-            RefreshMode::BlackWhiteFast => sys::BLACK_AND_WHITE_FAST_REFRESH,
+            RefreshMode::Mono => sys::BLACK_AND_WHITE_REFRESH,
+            RefreshMode::MonoFast => sys::BLACK_AND_WHITE_FAST_REFRESH,
         };
 
         let area = sys::nbgl_area_t {

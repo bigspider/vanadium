@@ -48,7 +48,7 @@ pub struct Capabilities {
 impl Capabilities {
     /// Metrics for a given font.
     pub fn font(&self, font: Font) -> FontMetrics {
-        self.fonts[font as usize]
+        self.fonts[font.index()]
     }
 }
 

@@ -47,7 +47,7 @@ pub struct EinkPolicy {
     width: i32,
     height: i32,
     /// The panel's native pixel format. Monochrome (Mono1, the Nano panels) refreshes in
-    /// black-&-white; `FullColor` is meaningless there and only the grayscale Stax/Flex
+    /// black-&-white; `FullQuality` is meaningless there and only the grayscale Stax/Flex
     /// panels actually have a full-color refresh.
     format: PixelFormat,
     fast_text: bool,
@@ -70,8 +70,8 @@ impl EinkPolicy {
     // The full-screen / full-color refresh mode appropriate for this panel.
     fn full_mode(&self) -> RefreshMode {
         match self.format {
-            PixelFormat::Mono1 => RefreshMode::BlackWhite,
-            PixelFormat::Gray4 => RefreshMode::FullColor,
+            PixelFormat::Mono1 => RefreshMode::Mono,
+            PixelFormat::Gray4 => RefreshMode::FullQuality,
         }
     }
 
@@ -106,11 +106,11 @@ impl RefreshPolicy for EinkPolicy {
         };
         let mode = if self.format == PixelFormat::Mono1 {
             // Monochrome panels have only a black-&-white refresh.
-            RefreshMode::BlackWhite
+            RefreshMode::Mono
         } else if self.fast_text && hint == ContentHint::Text {
-            RefreshMode::BlackWhiteFast
+            RefreshMode::MonoFast
         } else {
-            RefreshMode::FullColor
+            RefreshMode::FullQuality
         };
         screen.refresh_area(x, y, w, h, mode);
         self.partials_since_full += 1;
@@ -135,7 +135,7 @@ impl ImmediatePolicy {
 impl RefreshPolicy for ImmediatePolicy {
     fn present(&mut self, screen: &Screen, dirty: Rect, _hint: ContentHint) {
         if let Some((x, y, w, h)) = align4_clip(dirty, self.width, self.height) {
-            screen.refresh_area(x, y, w, h, RefreshMode::FullColor);
+            screen.refresh_area(x, y, w, h, RefreshMode::FullQuality);
         }
     }
 }

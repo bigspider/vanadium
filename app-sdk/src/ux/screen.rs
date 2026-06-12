@@ -134,8 +134,8 @@ impl Screen {
     /// The sensible default refresh mode for this device's pixel format.
     pub fn default_refresh_mode(&self) -> RefreshMode {
         match self.format {
-            PixelFormat::Gray4 => RefreshMode::FullColor,
-            PixelFormat::Mono1 => RefreshMode::BlackWhite,
+            PixelFormat::Gray4 => RefreshMode::FullQuality,
+            PixelFormat::Mono1 => RefreshMode::Mono,
         }
     }
 }

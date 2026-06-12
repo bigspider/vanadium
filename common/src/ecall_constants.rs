@@ -46,25 +46,28 @@ pub const DEVICE_PROPERTY_PIXEL_FORMAT: u32 = 0x04;
 ///
 /// In every format, rows are stored top-to-bottom, each row padded to a whole
 /// number of bytes (see [`PixelFormat::stride`]).
+///
+/// Encodings start at 1: in every ABI enum, 0 is reserved as invalid/unknown
+/// (so e.g. `get_device_property` can use 0 for "unsupported property").
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum PixelFormat {
-    /// 1 bit per pixel. 0 = background, 1 = foreground. Each row is MSB-first
+    /// 1 bit per pixel: 0 = black, 1 = white. Each row is MSB-first
     /// (the leftmost pixel is the most significant bit of the first byte) and
     /// padded to a byte boundary: `stride = (w + 7) / 8`.
-    Mono1 = 0,
-    /// 4 bits per pixel grayscale, 0 = black .. 15 = white. Two pixels per byte,
+    Mono1 = 1,
+    /// 4 bits per pixel grayscale, 0 = black ..= 15 = white. Two pixels per byte,
     /// the high nibble being the left pixel; rows are padded to a byte boundary:
     /// `stride = (w + 1) / 2`.
-    Gray4 = 1,
+    Gray4 = 2,
 }
 
 impl PixelFormat {
     /// Reconstructs a `PixelFormat` from its `u32` ECALL encoding.
     pub const fn from_u32(value: u32) -> Option<Self> {
         match value {
-            0 => Some(PixelFormat::Mono1),
-            1 => Some(PixelFormat::Gray4),
+            1 => Some(PixelFormat::Mono1),
+            2 => Some(PixelFormat::Gray4),
             _ => None,
         }
     }
@@ -133,30 +136,33 @@ impl Color {
 ///
 /// The panel refresh is the expensive part of putting something on an e-ink screen;
 /// picking a cheaper mode for small or monochrome updates is a major performance lever.
-/// These map to the Ledger SDK `nbgl_refresh_mode_t` values on device.
+/// Modes are named for intent, not for any specific panel technology; on Ledger
+/// devices they map to the SDK's `nbgl_refresh_mode_t` values.
+///
+/// Encodings start at 1: 0 is reserved as invalid/unknown in every ABI enum.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum RefreshMode {
-    /// Normal full-color refresh: best quality, slowest. Sensible default on grayscale
+    /// The best quality the panel offers: slowest. Sensible default on grayscale
     /// (`Gray4`) devices.
-    FullColor = 0,
-    /// Small partial full-color refresh, for localized updates (toggles, a status line).
-    Partial = 1,
+    FullQuality = 1,
+    /// Localized update, quality maintained — for small changes (toggles, a status line).
+    Partial = 2,
     /// Pure black & white refresh, contrast prioritized. Default on monochrome (`Mono1`)
     /// devices.
-    BlackWhite = 2,
+    Mono = 3,
     /// Pure black & white refresh, speed prioritized over contrast.
-    BlackWhiteFast = 3,
+    MonoFast = 4,
 }
 
 impl RefreshMode {
     /// Reconstructs a `RefreshMode` from its `u32` ECALL encoding.
     pub const fn from_u32(value: u32) -> Option<Self> {
         match value {
-            0 => Some(RefreshMode::FullColor),
-            1 => Some(RefreshMode::Partial),
-            2 => Some(RefreshMode::BlackWhite),
-            3 => Some(RefreshMode::BlackWhiteFast),
+            1 => Some(RefreshMode::FullQuality),
+            2 => Some(RefreshMode::Partial),
+            3 => Some(RefreshMode::Mono),
+            4 => Some(RefreshMode::MonoFast),
             _ => None,
         }
     }
@@ -167,26 +173,33 @@ impl RefreshMode {
 /// Fonts are device-specific bitmap assets baked into the OS; rather than expose raw
 /// per-device font ids, V-Apps pick a semantic role and the VM maps it to the right
 /// `nbgl_font_id_e` for the current device.
+///
+/// Encodings start at 1: 0 is reserved as invalid/unknown in every ABI enum.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum Font {
     /// The standard body/regular text font.
-    Regular = 0,
+    Regular = 1,
     /// The bold/semibold text font.
-    Bold = 1,
+    Bold = 2,
     /// The large/title font.
-    Large = 2,
+    Large = 3,
 }
 
 impl Font {
     /// Reconstructs a `Font` from its `u32` ECALL encoding.
     pub const fn from_u32(value: u32) -> Option<Self> {
         match value {
-            0 => Some(Font::Regular),
-            1 => Some(Font::Bold),
-            2 => Some(Font::Large),
+            1 => Some(Font::Regular),
+            2 => Some(Font::Bold),
+            3 => Some(Font::Large),
             _ => None,
         }
+    }
+
+    /// A stable 0-based index for table lookups (`Regular` = 0, `Bold` = 1, `Large` = 2).
+    pub const fn index(self) -> usize {
+        self as usize - 1
     }
 }
 

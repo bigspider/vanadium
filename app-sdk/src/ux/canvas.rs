@@ -21,8 +21,8 @@ use common::ecall_constants::{
 /// grayscale screens, black & white for monochrome ones.
 fn default_refresh_mode(format: PixelFormat) -> RefreshMode {
     match format {
-        PixelFormat::Gray4 => RefreshMode::FullColor,
-        PixelFormat::Mono1 => RefreshMode::BlackWhite,
+        PixelFormat::Gray4 => RefreshMode::FullQuality,
+        PixelFormat::Mono1 => RefreshMode::Mono,
     }
 }
 

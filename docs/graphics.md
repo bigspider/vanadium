@@ -137,15 +137,17 @@ Stax 4bpp frame is ~134 KB; you rarely want to push all of it every refresh).
 // common/src/ecall_constants.rs
 #[repr(u32)]
 pub enum PixelFormat {
-    /// 1 bit per pixel. 0 = background, 1 = foreground.
+    /// 1 bit per pixel: 0 = black, 1 = white.
     /// Rows are MSB-first and padded to a byte boundary: stride = (w + 7) / 8.
-    Mono1 = 0,
-    /// 4 bits per pixel grayscale. 0 = black .. 15 = white.
+    Mono1 = 1,
+    /// 4 bits per pixel grayscale. 0 = black ..= 15 = white.
     /// Two pixels per byte, the high nibble is the left pixel; rows are padded to a
     /// byte boundary: stride = (w + 1) / 2.
-    Gray4 = 1,
+    Gray4 = 2,
 }
 ```
+
+(Encodings start at 1 — in every ABI enum, 0 is reserved as invalid/unknown.)
 
 These two formats are chosen to match the native NBGL bit depths exactly and avoid
 conversion cost:
@@ -271,10 +273,10 @@ display_draw_text(x, y, w, h, text, text_len, color_font) -> u32;
 ### Refresh modes
 
 `display_refresh`'s last argument is now a [`RefreshMode`](../common/src/ecall_constants.rs)
-(`FullColor` / `Partial` / `BlackWhite` / `BlackWhiteFast`) rather than a pixel format.
+(`FullQuality` / `Partial` / `Mono` / `MonoFast`) rather than a pixel format.
 The panel refresh is the expensive part of an e-ink update, so picking a partial or fast
-B&W mode for small or monochrome updates is a real performance lever. The SDK defaults to
-`FullColor` on grayscale screens and `BlackWhite` on monochrome ones.
+black-&-white mode for small or monochrome updates is a real performance lever. The SDK
+defaults to `FullQuality` on grayscale screens and `Mono` on monochrome ones.
 
 ### Which NBGL functions are reachable
 
