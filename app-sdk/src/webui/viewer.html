@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<!--
+  Vanadium native viewer.
+
+  Served by the V-App's built-in HTTP server (app-sdk, mod webui). It long-polls
+  GET /frame for the next framebuffer version, renders it to a <canvas>, and posts
+  pointer/keyboard input to POST /input. No build step, no dependencies — and the
+  same page is intended to drive a future WASM build over in-process calls instead
+  of HTTP.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vanadium V-App viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    font-family: system-ui, sans-serif;
+    background: #1a1c20;
+    color: #d8dadf;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 18px;
+  }
+  header { text-align: center; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
+  #meta { font-size: 12px; color: #8b8f99; }
+  #frame {
+    background: #000;
+    image-rendering: pixelated;
+    border-radius: 10px;
+    box-shadow: 0 0 0 1px #34373d, 0 10px 30px rgba(0,0,0,.5);
+    touch-action: none;
+  }
+  .row { display: flex; gap: 10px; align-items: center; }
+  button {
+    font: inherit;
+    color: #d8dadf;
+    background: #2a2d33;
+    border: 1px solid #3c4047;
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  button:hover { background: #34373d; }
+  #quit { border-color: #5c3b3b; }
+  #help {
+    font-size: 12px;
+    color: #8b8f99;
+    max-width: 520px;
+    text-align: center;
+    line-height: 1.5;
+  }
+  #help b { color: #c7cad1; }
+  #status { font-size: 11px; color: #6b6f78; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vanadium V-App</h1>
+  <div id="meta">connecting…</div>
+</header>
+
+<canvas id="frame" width="1" height="1"></canvas>
+
+<div class="row">
+  <button id="stop" title="End the current demo loop (sends Quit, app keeps running)">Stop demo</button>
+  <button id="quit" title="Close the viewer and exit the V-App process">Quit</button>
+</div>
+
+<div id="help"></div>
+<div id="status"></div>
+
+<script>
+"use strict";
+
+const FEATURE_TOUCH = 1 << 0;
+const FEATURE_BUTTONS = 1 << 1;
+
+const canvas = document.getElementById("frame");
+const ctx = canvas.getContext("2d");
+const meta = document.getElementById("meta");
+const help = document.getElementById("help");
+const status = document.getElementById("status");
+
+let version = 0;
+let features = 0;
+
+// Render a frame: pixels are base64-encoded intensities (0..15), one byte per pixel.
+function render(frame) {
+  const { w, h, pixels } = frame;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    // Scale up small (Nano) panels so they're comfortable to see; mouse mapping uses
+    // the rendered rect, so the exact factor doesn't affect coordinate accuracy.
+    const scale = Math.max(1, Math.round(480 / w));
+    canvas.style.width = w * scale + "px";
+    canvas.style.height = h * scale + "px";
+  }
+  const bin = atob(pixels);
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < bin.length; i++) {
+    const v = Math.round((bin.charCodeAt(i) * 255) / 15);
+    const j = i << 2;
+    img.data[j] = v;
+    img.data[j + 1] = v;
+    img.data[j + 2] = v;
+    img.data[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function updateMeta(frame) {
+  const fmt = frame.format === 1 ? "Mono1" : frame.format === 2 ? "Gray4" : "?";
+  meta.textContent = `${frame.w}×${frame.h} · ${fmt}`;
+  const touch = (features & FEATURE_TOUCH) !== 0;
+  const buttons = (features & FEATURE_BUTTONS) !== 0;
+  help.innerHTML = touch
+    ? "<b>Touch:</b> click and drag on the screen. <b>Esc</b> stops the demo."
+    : buttons
+    ? "<b>Buttons:</b> <b>←</b>/<b>→</b> arrows, <b>↓</b> or <b>Enter</b> = both. <b>Esc</b> stops the demo."
+    : "";
+}
+
+function send(obj) {
+  fetch("/input", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(obj),
+  }).catch(() => {});
+}
+
+// --- long-poll loop -------------------------------------------------------
+async function poll() {
+  try {
+    const res = await fetch("/frame?since=" + version);
+    if (res.status === 200) {
+      const frame = await res.json();
+      version = frame.version;
+      features = frame.features;
+      render(frame);
+      updateMeta(frame);
+      status.textContent = "";
+    }
+    setTimeout(poll, 0);
+  } catch (e) {
+    status.textContent = "viewer disconnected — retrying…";
+    setTimeout(poll, 500);
+  }
+}
+
+// --- pointer → touch events ----------------------------------------------
+function devCoords(ev) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  return { x: Math.floor(x), y: Math.floor(y) };
+}
+
+let dragging = false;
+let pendingMove = null;
+let moveScheduled = false;
+
+canvas.addEventListener("pointerdown", (ev) => {
+  ev.preventDefault();
+  canvas.setPointerCapture(ev.pointerId);
+  dragging = true;
+  const { x, y } = devCoords(ev);
+  send({ type: "touch", x, y, state: "pressed" });
+});
+
+canvas.addEventListener("pointermove", (ev) => {
+  if (!dragging) return;
+  pendingMove = devCoords(ev);
+  if (!moveScheduled) {
+    moveScheduled = true;
+    requestAnimationFrame(() => {
+      moveScheduled = false;
+      if (dragging && pendingMove) {
+        send({ type: "touch", x: pendingMove.x, y: pendingMove.y, state: "pressed" });
+      }
+    });
+  }
+});
+
+function endDrag(ev) {
+  if (!dragging) return;
+  dragging = false;
+  const { x, y } = devCoords(ev);
+  send({ type: "touch", x, y, state: "released" });
+}
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+
+// --- keyboard → button events --------------------------------------------
+const KEY_TO_BUTTON = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowDown: "both",
+  Enter: "both",
+};
+const held = new Set();
+
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") {
+    send({ type: "stop" });
+    return;
+  }
+  const button = KEY_TO_BUTTON[ev.key];
+  if (!button) return;
+  ev.preventDefault();
+  if (held.has(ev.key)) return; // ignore auto-repeat
+  held.add(ev.key);
+  send({ type: "button", button, state: "pressed" });
+});
+
+window.addEventListener("keyup", (ev) => {
+  const button = KEY_TO_BUTTON[ev.key];
+  if (!button) return;
+  ev.preventDefault();
+  held.delete(ev.key);
+  send({ type: "button", button, state: "released" });
+});
+
+document.getElementById("stop").addEventListener("click", () => send({ type: "stop" }));
+document.getElementById("quit").addEventListener("click", () => send({ type: "quit" }));
+
+poll();
+</script>
+</body>
+</html>

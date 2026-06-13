@@ -30,3 +30,6 @@ venv
 # Speculos output captured by the integration test harness
 speculos_stdout.log
 speculos_stderr.log
+
+# Native target screen dump (also mirrored to the browser viewer)
+vapp_screen.ppm

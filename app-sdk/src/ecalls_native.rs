@@ -149,28 +149,90 @@ fn wait_for_client() -> TcpStream {
     }
 }
 
+// A small FIFO of pending input events, mirroring the VM's queue
+// (`vm/src/handlers/lib/ecall/ux_handler.rs`): bounded, oldest-dropped on overflow, with
+// consecutive *Pressed* touches coalesced so a mouse-drag flood cannot grow it. Tickers
+// are never queued here — `get_event` synthesizes them on timeout, which keeps input
+// ahead of the ticker. The single-slot predecessor dropped a release that arrived before
+// the guest drained the press; a real queue delivers both, matching the device.
+const EVENT_QUEUE_CAP: usize = 4;
+
+struct EventQueue {
+    buf: std::collections::VecDeque<(common::ux::EventCode, common::ux::EventData)>,
+}
+
+impl EventQueue {
+    fn new() -> Self {
+        Self {
+            buf: std::collections::VecDeque::with_capacity(EVENT_QUEUE_CAP),
+        }
+    }
+
+    fn push(&mut self, ev: (common::ux::EventCode, common::ux::EventData)) {
+        if self.buf.len() == EVENT_QUEUE_CAP {
+            // Full (the guest drains far faster than a human generates input): drop the
+            // oldest to favor the most recent input.
+            self.buf.pop_front();
+        }
+        self.buf.push_back(ev);
+    }
+
+    fn tail(&self) -> Option<(common::ux::EventCode, common::ux::EventData)> {
+        self.buf.back().copied()
+    }
+
+    fn overwrite_tail(&mut self, ev: (common::ux::EventCode, common::ux::EventData)) {
+        if let Some(slot) = self.buf.back_mut() {
+            *slot = ev;
+        }
+    }
+
+    fn pop(&mut self) -> Option<(common::ux::EventCode, common::ux::EventData)> {
+        self.buf.pop_front()
+    }
+}
+
 lazy_static! {
-    static ref LAST_EVENT: Mutex<Option<(common::ux::EventCode, common::ux::EventData)>> =
-        Mutex::new(None);
+    static ref EVENT_QUEUE: Mutex<EventQueue> = Mutex::new(EventQueue::new());
     static ref TCP_CONN: Mutex<TcpStream> = Mutex::new(wait_for_client());
 }
 
 fn get_last_event() -> Option<(common::ux::EventCode, common::ux::EventData)> {
-    let mut last_event = LAST_EVENT.lock().expect("Mutex poisoned");
-    last_event.take()
+    EVENT_QUEUE.lock().expect("Event queue mutex poisoned").pop()
 }
 
 fn store_new_event(event_code: common::ux::EventCode, event_data: common::ux::EventData) {
-    let mut last_event = LAST_EVENT.lock().expect("Mutex poisoned");
-    // Store the new event if there is no stored event,
-    // or if the currently stored event is a ticker.
-    if last_event.is_none()
-        || last_event
-            .as_ref()
-            .map_or(false, |e| e.0 == common::ux::EventCode::Ticker)
-    {
-        *last_event = Some((event_code, event_data));
+    let mut q = EVENT_QUEUE.lock().expect("Event queue mutex poisoned");
+    enqueue_event(&mut q, event_code, event_data);
+}
+
+// The queueing policy, separated from the global lock so it can be unit-tested.
+// Coalesce a drag's move-flood: a new Pressed touch overwrites a queued Pressed touch
+// (mid-drag only the latest finger position matters), but never across a press/release
+// edge — a fast tap within one ticker window must still deliver Pressed then Released.
+// Discrete button presses/releases are always kept in order. Mirrors the VM's
+// store_new_event.
+fn enqueue_event(
+    q: &mut EventQueue,
+    event_code: common::ux::EventCode,
+    event_data: common::ux::EventData,
+) {
+    use common::ux::{EventCode, PressState};
+    if event_code == EventCode::Touch {
+        if let Some((tail_code, tail_data)) = q.tail() {
+            // SAFETY: an event queued with code Touch holds the union's touch variant.
+            let both_pressed = tail_code == EventCode::Touch
+                && unsafe {
+                    tail_data.touch.state == PressState::Pressed
+                        && event_data.touch.state == PressState::Pressed
+                };
+            if both_pressed {
+                q.overwrite_tail((event_code, event_data));
+                return;
+            }
+        }
     }
+    q.push((event_code, event_data));
 }
 
 pub fn exit(status: i32) -> ! {
@@ -337,6 +399,10 @@ pub fn get_event(data: *mut EventData) -> u32 {
         panic!("The EventData pointer must not be null");
     }
 
+    // Make sure the browser viewer is up, so a V-App that idles on get_event (rather than
+    // refreshing) still gets a window and can receive input.
+    webui::ensure_started();
+
     unsafe {
         if let Some((event_code, event_data)) = get_last_event() {
             std::ptr::write(data, event_data);
@@ -345,8 +411,8 @@ pub fn get_event(data: *mut EventData) -> u32 {
     }
 
     // Optional synthetic input for interactively testing custom GUIs on native. Enabled by
-    // setting VAPP_NATIVE_INPUT; otherwise the only event is the periodic ticker. Page-based
-    // UX stores its action before calling get_event, so this branch never steals their input.
+    // setting VAPP_NATIVE_INPUT; it takes precedence over the viewer so runs can be scripted.
+    // Page-based UX stores its action before calling get_event, so this never steals input.
     if std::env::var_os("VAPP_NATIVE_INPUT").is_some() {
         if let Some((event_code, event_data)) = read_synthetic_event() {
             unsafe {
@@ -356,7 +422,26 @@ pub fn get_event(data: *mut EventData) -> u32 {
         }
     }
 
-    // We wait for TICKER_MS milliseconds and return a Ticker event.
+    // With the viewer active, poll the queue in small steps so browser input is delivered
+    // within ~10ms instead of a whole ticker period, while still ticking ~every TICKER_MS.
+    if webui::active() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(TICKER_MS);
+        loop {
+            unsafe {
+                if let Some((event_code, event_data)) = get_last_event() {
+                    std::ptr::write(data, event_data);
+                    return event_code as u32;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        return EventCode::Ticker as u32;
+    }
+
+    // Headless: wait for TICKER_MS milliseconds and return a Ticker event.
     std::thread::sleep(std::time::Duration::from_millis(TICKER_MS));
     return EventCode::Ticker as u32;
 }
@@ -365,9 +450,8 @@ pub fn get_event(data: *mut EventData) -> u32 {
 // Device profiles & low-level graphics (display_blit)
 //
 // On the native target the "screen" is a virtual framebuffer kept in memory.
-// Every blit is dumped to a PPM file so it can be inspected without any system
-// dependency; when the optional `gui` feature is enabled it is also mirrored to
-// an embedded-graphics-simulator window.
+// `display_refresh` dumps it to a PPM file (inspectable with no dependency) and
+// pushes it to the browser viewer (see `mod webui`).
 // ===========================================================================
 
 /// A device the native backend can emulate: drives the geometry, native pixel
@@ -375,6 +459,7 @@ pub fn get_event(data: *mut EventData) -> u32 {
 /// capability-driven app code takes the same paths it would on the corresponding
 /// hardware, and contract violations are caught on the dev machine for every
 /// target, not just the default one.
+#[derive(Clone)]
 struct DeviceProfile {
     name: &'static str,
     width: usize,
@@ -467,14 +552,52 @@ impl VirtualScreen {
     }
 }
 
+/// Parses a `WxH` screen-size override (separator `x` or `X`) against the profile's
+/// granularity. Returns a human-readable error rather than silently falling back, so a
+/// typo fails loudly like an unknown `VAPP_DEVICE`.
+fn parse_screen_size(
+    spec: &str,
+    granularity: common::ecall_constants::DisplayGranularity,
+) -> Result<(usize, usize), String> {
+    let (w_str, h_str) = spec
+        .split_once(['x', 'X'])
+        .ok_or_else(|| "expected WIDTHxHEIGHT, e.g. 400x500".to_string())?;
+    let w: usize = w_str
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad width '{}'", w_str.trim()))?;
+    let h: usize = h_str
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad height '{}'", h_str.trim()))?;
+    if w == 0 || h == 0 {
+        return Err("width and height must be nonzero".to_string());
+    }
+    // Packed into a u32 device property as (w << 16) | h, so each must fit in 16 bits.
+    if w > u16::MAX as usize || h > u16::MAX as usize {
+        return Err(format!("width and height must each be <= {}", u16::MAX));
+    }
+    // A full-screen blit must satisfy the panel's alignment, so the dimensions have to be
+    // whole multiples of the granularity (notably height a multiple of 4).
+    let (gw, gh) = (granularity.w as usize, granularity.h as usize);
+    if w % gw != 0 || h % gh != 0 {
+        return Err(format!(
+            "width must be a multiple of {} and height a multiple of {}",
+            gw, gh
+        ));
+    }
+    Ok((w, h))
+}
+
 lazy_static! {
     // The emulated device, selected once with the `VAPP_DEVICE` env var
     // (flex | stax | apex_p | nanosplus | nanox); flex — the tooling's default
     // target — when unset. An unknown name fails loudly rather than silently
-    // emulating the wrong device.
-    static ref DEVICE_PROFILE: &'static DeviceProfile = {
+    // emulating the wrong device. `VAPP_SCREEN_SIZE=WxH` optionally overrides the
+    // geometry while keeping the rest of the profile.
+    static ref DEVICE_PROFILE: DeviceProfile = {
         let name = std::env::var("VAPP_DEVICE").unwrap_or_else(|_| "flex".into());
-        DEVICE_PROFILES
+        let mut profile = DEVICE_PROFILES
             .iter()
             .find(|p| p.name == name)
             .unwrap_or_else(|| {
@@ -483,6 +606,18 @@ lazy_static! {
                     name
                 )
             })
+            .clone();
+        if let Some(spec) = std::env::var_os("VAPP_SCREEN_SIZE") {
+            let spec = spec.to_string_lossy();
+            match parse_screen_size(&spec, profile.granularity) {
+                Ok((w, h)) => {
+                    profile.width = w;
+                    profile.height = h;
+                }
+                Err(e) => panic!("invalid VAPP_SCREEN_SIZE '{}': {}", spec, e),
+            }
+        }
+        profile
     };
     static ref VIRTUAL_SCREEN: Mutex<VirtualScreen> =
         Mutex::new(VirtualScreen::new(DEVICE_PROFILE.width, DEVICE_PROFILE.height));
@@ -623,12 +758,13 @@ pub fn display_refresh(pos: u32, size: u32, mode: u32) -> i32 {
     // validate here.
     let screen = VIRTUAL_SCREEN.lock().expect("Screen mutex poisoned");
 
-    // Persist a viewable copy of the whole screen.
+    // Persist a viewable copy of the whole screen (handy on its own, and the fallback when
+    // the browser viewer is disabled or unreachable).
     let path = std::env::var("VAPP_SCREEN_PPM").unwrap_or_else(|_| "vapp_screen.ppm".into());
     let _ = screen.dump_ppm(&path);
 
-    #[cfg(feature = "gui")]
-    gui::present(&screen);
+    // Push the frame to the browser viewer (a no-op when headless / in tests).
+    webui::present(&screen);
 
     0
 }
@@ -886,32 +1022,408 @@ pub fn display_font_metrics(font: u32) -> i32 {
     ((height << 16) | line_height) as i32
 }
 
-#[cfg(feature = "gui")]
-mod gui {
-    use super::VirtualScreen;
-    use embedded_graphics::pixelcolor::Gray8;
-    use embedded_graphics::prelude::*;
-    use embedded_graphics_simulator::{OutputSettingsBuilder, SimulatorDisplay, Window};
-    use std::sync::Mutex;
+// ===========================================================================
+// Browser viewer
+//
+// A dependency-free, portable replacement for a native window: a tiny blocking
+// HTTP server (one background thread, thread-per-connection) streams the
+// framebuffer to a browser page and reads mouse/keyboard back as touch/button
+// events. Works the same on Linux and macOS, needs no system libraries, and is a
+// deliberate stepping stone toward a future WASM target (the frame/input JSON
+// protocol and `webui/viewer.html` are reusable; only the transport changes).
+//
+// Endpoints: `GET /` serves the page; `GET /frame?since=N` long-polls for the next
+// framebuffer version; `POST /input` delivers an event. The page computes device
+// coordinates itself, so the server only maps JSON to `EventData`.
+// ===========================================================================
+mod webui {
+    use super::{store_new_event, VirtualScreen, DEVICE_PROFILE};
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, Once};
+    use std::time::{Duration, Instant};
 
-    lazy_static::lazy_static! {
-        static ref WINDOW: Mutex<Option<Window>> = Mutex::new(None);
+    const VIEWER_HTML: &str = include_str!("webui/viewer.html");
+    const FRAME_POLL_TIMEOUT: Duration = Duration::from_millis(1000);
+
+    // The most recently presented framebuffer (intensity 0..=15, one byte per pixel).
+    // `version` is bumped on every `present`, so a long-polling client can wait for the
+    // next frame by passing the version it last saw.
+    struct Frame {
+        w: usize,
+        h: usize,
+        format: u32,
+        features: u32,
+        pixels: Vec<u8>,
+        version: u64,
     }
 
-    pub fn present(screen: &VirtualScreen) {
-        let mut display: SimulatorDisplay<Gray8> =
-            SimulatorDisplay::new(Size::new(screen.width as u32, screen.height as u32));
-        for (i, &intensity) in screen.pixels.iter().enumerate() {
-            let x = (i % screen.width) as i32;
-            let y = (i / screen.width) as i32;
-            let v = ((intensity as u16) * 255 / 15) as u8;
-            let _ = Pixel(Point::new(x, y), Gray8::new(v)).draw(&mut display);
-        }
-        let mut guard = WINDOW.lock().expect("Window mutex poisoned");
-        let window = guard.get_or_insert_with(|| {
-            Window::new("Vanadium V-App", &OutputSettingsBuilder::new().build())
+    lazy_static::lazy_static! {
+        static ref FRAME: Mutex<Frame> = Mutex::new(Frame {
+            w: 0,
+            h: 0,
+            format: 0,
+            features: 0,
+            pixels: Vec::new(),
+            version: 0,
         });
-        window.update(&display);
+    }
+    static WEBUI_START: Once = Once::new();
+    static WEBUI_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+    // The viewer is off in unit tests (no port binding) and when explicitly disabled with
+    // VAPP_HEADLESS — e.g. on CI or for scripted, stdin-driven runs.
+    fn enabled() -> bool {
+        if cfg!(test) || cfg!(feature = "test-mode") {
+            return false;
+        }
+        std::env::var_os("VAPP_HEADLESS").is_none()
+    }
+
+    fn want_addr() -> String {
+        std::env::var("VAPP_GUI_ADDR").unwrap_or_else(|_| "127.0.0.1:5005".into())
+    }
+
+    pub fn active() -> bool {
+        WEBUI_ACTIVE.load(Ordering::SeqCst)
+    }
+
+    /// Starts the viewer server once, lazily, on the first frame or `get_event`. Prints
+    /// the URL to open. Binding failure is non-fatal: the app keeps running with PPM
+    /// output only.
+    pub fn ensure_started() {
+        if !enabled() {
+            return;
+        }
+        WEBUI_START.call_once(|| match bind_listener() {
+            Some((listener, addr)) => {
+                eprintln!("Viewer: open http://{addr} in a browser");
+                WEBUI_ACTIVE.store(true, Ordering::SeqCst);
+                std::thread::Builder::new()
+                    .name("vapp-webui".into())
+                    .spawn(move || serve(listener))
+                    .expect("failed to spawn viewer thread");
+            }
+            None => {
+                eprintln!("Viewer: could not bind a local port; falling back to PPM output");
+            }
+        });
+    }
+
+    fn bind_listener() -> Option<(TcpListener, SocketAddr)> {
+        // Prefer the requested address; if it is taken, fall back to an ephemeral port so
+        // two concurrent V-Apps don't collide.
+        let listener = TcpListener::bind(want_addr())
+            .or_else(|_| TcpListener::bind("127.0.0.1:0"))
+            .ok()?;
+        let addr = listener.local_addr().ok()?;
+        Some((listener, addr))
+    }
+
+    /// Copies the virtual framebuffer into the shared `Frame` and bumps its version. Cheap
+    /// and non-blocking — the SDL-free design does all rendering in the browser.
+    pub fn present(screen: &VirtualScreen) {
+        ensure_started();
+        if !active() {
+            return;
+        }
+        let mut frame = FRAME.lock().expect("Frame mutex poisoned");
+        frame.w = screen.width;
+        frame.h = screen.height;
+        frame.format = DEVICE_PROFILE.format as u32;
+        frame.features = DEVICE_PROFILE.features;
+        frame.pixels.clear();
+        frame.pixels.extend_from_slice(&screen.pixels);
+        frame.version += 1;
+    }
+
+    fn serve(listener: TcpListener) {
+        for stream in listener.incoming() {
+            if let Ok(stream) = stream {
+                // One short-lived thread per request (Connection: close). The /frame
+                // long-poll blocks at most FRAME_POLL_TIMEOUT, so threads don't pile up.
+                std::thread::spawn(move || {
+                    let _ = handle_conn(stream);
+                });
+            }
+        }
+    }
+
+    fn handle_conn(mut stream: TcpStream) -> std::io::Result<()> {
+        let (method, path, body) = read_request(&mut stream)?;
+        match (method.as_str(), route_path(&path)) {
+            ("GET", "/") => respond(&mut stream, 200, "text/html; charset=utf-8", VIEWER_HTML.as_bytes()),
+            ("GET", "/frame") => handle_frame(&mut stream, &path),
+            ("POST", "/input") => {
+                handle_input(&body);
+                respond(&mut stream, 204, "text/plain", b"")
+            }
+            _ => respond(&mut stream, 404, "text/plain", b"not found"),
+        }
+    }
+
+    // Long-poll: block until a frame newer than `since` is available, then return it as
+    // JSON; on timeout return 204 so the browser simply asks again.
+    fn handle_frame(stream: &mut TcpStream, path: &str) -> std::io::Result<()> {
+        let since = query_param(path, "since")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let deadline = Instant::now() + FRAME_POLL_TIMEOUT;
+        loop {
+            {
+                let frame = FRAME.lock().expect("Frame mutex poisoned");
+                if frame.version > since && frame.w > 0 {
+                    let json = encode_frame_json(&frame);
+                    return respond(stream, 200, "application/json", json.as_bytes());
+                }
+            }
+            if Instant::now() >= deadline {
+                return respond(stream, 204, "text/plain", b"");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn encode_frame_json(frame: &Frame) -> String {
+        format!(
+            "{{\"version\":{},\"w\":{},\"h\":{},\"format\":{},\"features\":{},\"pixels\":\"{}\"}}",
+            frame.version,
+            frame.w,
+            frame.h,
+            frame.format,
+            frame.features,
+            base64_encode(&frame.pixels),
+        )
+    }
+
+    fn handle_input(body: &[u8]) {
+        use common::ecall_constants::{FEATURE_BUTTONS, FEATURE_TOUCH};
+        use common::ux::{
+            Action, Button, ButtonEvent, EventCode, EventData, PressState, TouchEvent, TouchState,
+        };
+
+        let Ok(s) = std::str::from_utf8(body) else {
+            return;
+        };
+        let p = &*DEVICE_PROFILE;
+        let is_touch = p.features & FEATURE_TOUCH != 0;
+        let is_buttons = p.features & FEATURE_BUTTONS != 0;
+
+        match json_str(s, "type").as_deref() {
+            Some("touch") if is_touch => {
+                let x = json_num(s, "x").unwrap_or(0.0);
+                let y = json_num(s, "y").unwrap_or(0.0);
+                let state = match json_str(s, "state").as_deref() {
+                    Some("released") => TouchState::Released,
+                    _ => TouchState::Pressed,
+                };
+                let (x, y) = clamp_point(x, y, p.width, p.height);
+                let mut ed = EventData::default();
+                ed.touch = TouchEvent::new(x, y, state);
+                store_new_event(EventCode::Touch, ed);
+            }
+            Some("button") if is_buttons => {
+                let button = match json_str(s, "button").as_deref() {
+                    Some("left") => Button::Left,
+                    Some("right") => Button::Right,
+                    Some("both") => Button::Both,
+                    _ => return,
+                };
+                let state = match json_str(s, "state").as_deref() {
+                    Some("released") => PressState::Released,
+                    _ => PressState::Pressed,
+                };
+                let mut ed = EventData::default();
+                ed.button = ButtonEvent { button, state };
+                store_new_event(EventCode::Button, ed);
+            }
+            // End a running demo loop without killing the process.
+            Some("stop") => {
+                let mut ed = EventData::default();
+                ed.action = Action::Quit;
+                store_new_event(EventCode::Action, ed);
+            }
+            // Closing the viewer exits the process, the browser analog of closing a window.
+            Some("quit") => std::process::exit(0),
+            _ => {}
+        }
+    }
+
+    fn clamp_point(x: f64, y: f64, w: usize, h: usize) -> (u16, u16) {
+        let cx = x.max(0.0).min(w.saturating_sub(1) as f64) as u16;
+        let cy = y.max(0.0).min(h.saturating_sub(1) as f64) as u16;
+        (cx, cy)
+    }
+
+    // --- minimal HTTP/1.1 and JSON helpers (we control both ends; not a general server) ---
+
+    fn read_request(stream: &mut TcpStream) -> std::io::Result<(String, String, Vec<u8>)> {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        let header_end = loop {
+            if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+                break pos;
+            }
+            let n = stream.read(&mut tmp)?;
+            if n == 0 || buf.len() > 64 * 1024 {
+                // Connection closed before a full header, or an implausibly large header.
+                return Ok((String::new(), String::new(), Vec::new()));
+            }
+            buf.extend_from_slice(&tmp[..n]);
+        };
+
+        let header = String::from_utf8_lossy(&buf[..header_end]);
+        let mut lines = header.split("\r\n");
+        let mut request_line = lines.next().unwrap_or("").split_whitespace();
+        let method = request_line.next().unwrap_or("").to_string();
+        let path = request_line.next().unwrap_or("").to_string();
+
+        let mut content_length = 0usize;
+        for line in lines {
+            if let Some((name, value)) = line.split_once(':') {
+                if name.trim().eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+
+        let mut body = buf[header_end + 4..].to_vec();
+        while body.len() < content_length {
+            let n = stream.read(&mut tmp)?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&tmp[..n]);
+        }
+        body.truncate(content_length);
+        Ok((method, path, body))
+    }
+
+    fn respond(
+        stream: &mut TcpStream,
+        status: u16,
+        content_type: &str,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let reason = match status {
+            200 => "OK",
+            204 => "No Content",
+            404 => "Not Found",
+            _ => "OK",
+        };
+        let header = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(header.as_bytes())?;
+        stream.write_all(body)?;
+        stream.flush()
+    }
+
+    fn route_path(path: &str) -> &str {
+        path.split('?').next().unwrap_or(path)
+    }
+
+    fn query_param(path: &str, key: &str) -> Option<String> {
+        let query = path.split_once('?')?.1;
+        query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then(|| v.to_string())
+        })
+    }
+
+    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    // Extracts a flat string field `"key":"value"` from our own compact JSON.
+    fn json_str(s: &str, key: &str) -> Option<String> {
+        let rest = field_value(s, key)?;
+        let after = rest.trim_start().strip_prefix('"')?;
+        let end = after.find('"')?;
+        Some(after[..end].to_string())
+    }
+
+    // Extracts a flat numeric field `"key":number` from our own compact JSON.
+    fn json_num(s: &str, key: &str) -> Option<f64> {
+        let after = field_value(s, key)?.trim_start();
+        let end = after
+            .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')))
+            .unwrap_or(after.len());
+        after[..end].parse().ok()
+    }
+
+    // Returns the slice just after `"key":` for a flat JSON object.
+    fn field_value<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+        let needle = format!("\"{}\"", key);
+        let start = s.find(&needle)? + needle.len();
+        let colon = s[start..].find(':')?;
+        Some(&s[start + colon + 1..])
+    }
+
+    fn base64_encode(data: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+        for chunk in data.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(TABLE[((n >> 18) & 63) as usize] as char);
+            out.push(TABLE[((n >> 12) & 63) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[((n >> 6) & 63) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[(n & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod webui_tests {
+        use super::*;
+
+        #[test]
+        fn base64_known_vectors() {
+            assert_eq!(base64_encode(b""), "");
+            assert_eq!(base64_encode(b"f"), "Zg==");
+            assert_eq!(base64_encode(b"fo"), "Zm8=");
+            assert_eq!(base64_encode(b"foo"), "Zm9v");
+            assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+            assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+            assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        }
+
+        #[test]
+        fn json_field_extraction() {
+            let s = r#"{"type":"touch","x":12,"y":34.5,"state":"pressed"}"#;
+            assert_eq!(json_str(s, "type").as_deref(), Some("touch"));
+            assert_eq!(json_str(s, "state").as_deref(), Some("pressed"));
+            assert_eq!(json_num(s, "x"), Some(12.0));
+            assert_eq!(json_num(s, "y"), Some(34.5));
+            assert_eq!(json_str(s, "missing"), None);
+        }
+
+        #[test]
+        fn query_param_parsing() {
+            assert_eq!(route_path("/frame?since=7"), "/frame");
+            assert_eq!(query_param("/frame?since=7", "since").as_deref(), Some("7"));
+            assert_eq!(query_param("/frame", "since"), None);
+        }
+
+        #[test]
+        fn clamp_keeps_point_in_bounds() {
+            assert_eq!(clamp_point(-3.0, 1000.0, 128, 64), (0, 63));
+            assert_eq!(clamp_point(10.9, 20.2, 128, 64), (10, 20));
+        }
     }
 }
 
@@ -2555,6 +3067,76 @@ mod tests {
             slip21_derive_child_node(&c, b"Authentication key")[32..],
             hex!("47194e938ab24cc82bfa25f6486ed54bebe79c40ae2a5a32ea6db294d81861a6")
         );
+    }
+
+    fn touch_event(x: u16, y: u16, state: common::ux::TouchState) -> common::ux::EventData {
+        let mut ed = common::ux::EventData::default();
+        ed.touch = common::ux::TouchEvent::new(x, y, state);
+        ed
+    }
+
+    fn button_event(button: common::ux::Button) -> common::ux::EventData {
+        let mut ed = common::ux::EventData::default();
+        ed.button = common::ux::ButtonEvent {
+            button,
+            state: common::ux::PressState::Pressed,
+        };
+        ed
+    }
+
+    #[test]
+    fn event_queue_is_fifo_and_drops_oldest_when_full() {
+        use common::ux::{Button, EventCode};
+        let mut q = EventQueue::new();
+        // Five discrete button events into a cap-4 queue: the first (Left) is evicted.
+        for b in [Button::Left, Button::Right, Button::Left, Button::Right, Button::Both] {
+            enqueue_event(&mut q, EventCode::Button, button_event(b));
+        }
+        let drained: Vec<Button> = std::iter::from_fn(|| q.pop())
+            .map(|(_, d)| unsafe { d.button.button })
+            .collect();
+        assert_eq!(
+            drained,
+            vec![Button::Right, Button::Left, Button::Right, Button::Both]
+        );
+    }
+
+    #[test]
+    fn touch_pressed_coalesces_but_release_does_not() {
+        use common::ux::{EventCode, TouchState};
+        let mut q = EventQueue::new();
+        // A drag's move-flood collapses to a single Pressed with the latest coordinates.
+        enqueue_event(&mut q, EventCode::Touch, touch_event(1, 1, TouchState::Pressed));
+        enqueue_event(&mut q, EventCode::Touch, touch_event(2, 2, TouchState::Pressed));
+        enqueue_event(&mut q, EventCode::Touch, touch_event(9, 7, TouchState::Pressed));
+        assert_eq!(q.buf.len(), 1);
+        let (code, data) = q.pop().unwrap();
+        assert_eq!(code, EventCode::Touch);
+        unsafe {
+            assert_eq!((data.touch.x, data.touch.y), (9, 7));
+            assert_eq!(data.touch.state, TouchState::Pressed);
+        }
+        // A press then a release within one window must stay two distinct events.
+        enqueue_event(&mut q, EventCode::Touch, touch_event(4, 4, TouchState::Pressed));
+        enqueue_event(&mut q, EventCode::Touch, touch_event(4, 4, TouchState::Released));
+        assert_eq!(q.buf.len(), 2);
+        let states: Vec<TouchState> = std::iter::from_fn(|| q.pop())
+            .map(|(_, d)| unsafe { d.touch.state })
+            .collect();
+        assert_eq!(states, vec![TouchState::Pressed, TouchState::Released]);
+    }
+
+    #[test]
+    fn parse_screen_size_accepts_and_rejects() {
+        use common::ecall_constants::DisplayGranularity;
+        let g = DisplayGranularity { x: 1, y: 4, w: 1, h: 4 };
+        assert_eq!(parse_screen_size("400x500", g), Ok((400, 500)));
+        assert_eq!(parse_screen_size("128X64", g), Ok((128, 64))); // uppercase separator
+        assert!(parse_screen_size("0x0", g).is_err()); // zero
+        assert!(parse_screen_size("400x501", g).is_err()); // height not a multiple of 4
+        assert!(parse_screen_size("100000x100", g).is_err()); // exceeds u16
+        assert!(parse_screen_size("400", g).is_err()); // missing separator
+        assert!(parse_screen_size("axb", g).is_err()); // not numbers
     }
 
     macro_rules! test_hash {

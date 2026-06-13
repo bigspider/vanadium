@@ -17,10 +17,9 @@ vanadium-ecalls = { path = "../ecalls", default-features = false, optional = tru
 
 # Optional graphics support.
 # `embedded-graphics` enables the `Canvas` DrawTarget impl (works on both targets).
-# `embedded-graphics-simulator` (native only, behind the `gui` feature) mirrors the
-# virtual screen to an SDL window.
+# The native target also serves an interactive browser viewer (app-sdk/src/webui),
+# which needs no extra dependency.
 embedded-graphics = { version = "0.8.1", optional = true }
-embedded-graphics-simulator = { version = "0.7.0", optional = true }
 
 # target_native dependencies (optional)
 bip32 = { version = "0.5.2", optional = true }
@@ -62,8 +61,6 @@ test-mode = []
 
 # Graphics: the `Canvas` embedded-graphics DrawTarget abstraction.
 embedded-graphics = ["dep:embedded-graphics"]
-# Native-only: mirror the virtual screen to an SDL simulator window (requires SDL2).
-gui = ["embedded-graphics", "dep:embedded-graphics-simulator"]
 
 [dev-dependencies]
 serde_json = "1"

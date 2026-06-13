@@ -376,14 +376,42 @@ dedicated block (40–63, with room reserved for the planned icon / line / round
 
 ## Native / emulator backend
 
-On the native target the "screen" was previously the terminal (text). For
-graphics, `display_blit` updates an in-memory virtual framebuffer and:
+On the native target the "screen" is an in-memory virtual framebuffer.
+`display_refresh` both dumps it to a `vapp_screen.ppm` file (no system dependencies,
+works in CI / unit tests) and pushes it to a built-in **browser viewer**.
 
-- by default, dumps it to a `vapp_screen.ppm` file (no system dependencies, works
-  in CI / unit tests);
-- behind the optional `gui` feature, mirrors it to an
-  [`embedded-graphics-simulator`](https://docs.rs/embedded-graphics-simulator)
-  SDL window for pixel-accurate parity with on-device output.
+### Browser viewer
+
+The viewer is an interactive simulator that runs in any browser — no system
+libraries, so it works the same on Linux and macOS. The V-App serves it from a tiny
+local HTTP server ([`app-sdk/src/ecalls_native.rs`](../app-sdk/src/ecalls_native.rs),
+`mod webui`; the page is [`app-sdk/src/webui/viewer.html`](../app-sdk/src/webui/viewer.html)):
+the page long-polls `GET /frame` for the latest framebuffer and posts pointer /
+keyboard input to `POST /input`. It starts automatically on the first draw and prints
+its URL (`Viewer: open http://127.0.0.1:5005`). It is intentionally a stepping stone
+toward a future **WASM target** — the frame/input protocol is reusable; only the
+transport (HTTP → in-process JS) changes.
+
+Input maps to the same events the device produces, driven by the selected profile's
+feature bits:
+
+- **Touch** profiles (flex / stax / apex_p): mouse press/drag/release → `Touch`
+  events (drags coalesce, matching the VM).
+- **Button** profiles (nano s+ / x): `←` / `→` arrows → Left / Right, `↓` or `Enter`
+  → Both. The page acts on key down/up, so press and release both reach the app.
+- `Esc` (or the **Stop demo** button) sends `Action::Quit` to end a demo loop;
+  the **Quit** button exits the process (the browser analog of closing a window).
+
+Environment knobs:
+
+| Variable | Effect |
+|---|---|
+| `VAPP_DEVICE` | Emulated device: `flex` (default) `\| stax \| apex_p \| nanosplus \| nanox`. |
+| `VAPP_SCREEN_SIZE=WxH` | Override the profile's screen size (keeps its color depth / input model). Height must be a multiple of the granularity (4). |
+| `VAPP_GUI_ADDR` | Address to bind (default `127.0.0.1:5005`; falls back to an ephemeral port if taken). |
+| `VAPP_HEADLESS=1` | Disable the viewer (PPM output only) — e.g. on CI or for scripted runs. |
+| `VAPP_NATIVE_INPUT=1` | Read synthetic events from stdin instead; takes precedence over the viewer for scripting. |
+| `VAPP_SCREEN_PPM` | Path for the PPM dump (default `vapp_screen.ppm`). |
 
 ## Implementation checklist (per docs/ecalls.md)
 
