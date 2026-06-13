@@ -48,6 +48,27 @@ pub(crate) fn take_outbox() -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Input event queue. The page pushes touch/button/quit events here; `get_event`
+// pops them. When empty it returns `NO_EVENT_CODE`, which the SDK's async
+// `ux::get_event` treats as "suspend": the handler future yields back to the JS
+// step-driver, which renders the frame and waits for the next input.
+// ---------------------------------------------------------------------------
+/// Reserved code returned by `get_event` when the queue is empty (not a real
+/// `EventCode`, so `EventCode::from` is never reached for it).
+pub(crate) const NO_EVENT_CODE: u32 = u32::MAX - 1;
+
+static EVENT_QUEUE: Mutex<std::collections::VecDeque<(EventCode, EventData)>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// Runtime hook: queue an input event for the next `get_event`.
+pub(crate) fn push_event(code: EventCode, data: EventData) {
+    EVENT_QUEUE
+        .lock()
+        .expect("EVENT_QUEUE poisoned")
+        .push_back((code, data));
+}
+
+// ---------------------------------------------------------------------------
 // Core I/O
 // ---------------------------------------------------------------------------
 pub fn exit(status: i32) -> ! {
@@ -81,9 +102,13 @@ pub unsafe fn print(buffer: *const u8, size: usize) {
 }
 
 pub unsafe fn get_event(data: *mut EventData) -> u32 {
-    // Skeleton: no input plumbing yet — always a ticker.
-    unsafe { std::ptr::write(data, EventData::default()) };
-    EventCode::Ticker as u32
+    if let Some((code, ed)) = EVENT_QUEUE.lock().expect("EVENT_QUEUE poisoned").pop_front() {
+        unsafe { std::ptr::write(data, ed) };
+        code as u32
+    } else {
+        unsafe { std::ptr::write(data, EventData::default()) };
+        NO_EVENT_CODE
+    }
 }
 
 pub fn get_device_property(property: u32) -> u32 {

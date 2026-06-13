@@ -126,7 +126,7 @@ where
 
 /// The App struct represents the context of the application.
 pub struct App<S = ()> {
-    handler: Handler<S>,
+    pub(crate) handler: Handler<S>,
     vapp_name: &'static str,
     version: &'static str,
     description: Option<String>,
