@@ -8,14 +8,11 @@ name = "Test"
 stack_size = 65536
 
 [features]
-# Native runs open the simulator in an OS window by default; opt out with
-# `--no-default-features --features target_native` for the browser viewer.
-default = ["target_native", "native-window"]
+default = ["target_native"]
 target_native = ["sdk/target_native", "sdk/embedded-graphics"]
 target_vanadium_ledger = ["sdk/target_vanadium_ledger", "sdk/embedded-graphics"]
-# Native dev only: show the simulator in an OS window (embedded webview) instead of a
-# browser. Needs WebKitGTK on Linux (libwebkit2gtk-4.1-dev).
-native-window = ["sdk/native-window"]
+# Note: this app uses a custom main loop (not `AppBuilder::run`), where the native
+# window is hosted, so it always uses the browser viewer — no `native-window` feature.
 
 [dependencies]
 bs58 = { version = "0.5.1", default-features = false, features = ["alloc"] }

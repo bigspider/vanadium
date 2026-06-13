@@ -39,10 +39,24 @@ pub(crate) fn run(url: String) -> ! {
 
     // The webview just loads the same local viewer the browser would; all rendering and
     // input handling live in the page (app-sdk/src/webui/viewer.html).
-    let _webview = WebViewBuilder::new(&window)
-        .with_url(&url)
-        .build()
-        .expect("failed to create the webview");
+    //
+    // On Linux, attach the webview to the window's GTK container rather than going through
+    // the raw window handle: the raw-handle path is backend-dependent (it fails with
+    // `UnsupportedWindowHandle` under Wayland and some GTK setups), whereas the GTK path
+    // works on both X11 and Wayland. macOS/Windows use the portable raw-handle path.
+    #[cfg(target_os = "linux")]
+    let webview = {
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+        let vbox = window
+            .default_vbox()
+            .expect("native window has no GTK container");
+        WebViewBuilder::new_gtk(vbox).with_url(&url).build()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let webview = WebViewBuilder::new(&window).with_url(&url).build();
+
+    let _webview = webview.expect("failed to create the webview");
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
