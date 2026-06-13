@@ -1,13 +1,23 @@
 #![cfg_attr(feature = "target_vanadium_ledger", no_main, no_std)]
 
-// Ensure exactly one target feature is enabled
-#[cfg(all(feature = "target_native", feature = "target_vanadium_ledger"))]
+// Ensure exactly one target backend is enabled.
+#[cfg(any(
+    all(feature = "target_native", feature = "target_vanadium_ledger"),
+    all(feature = "target_native", feature = "target_wasm"),
+    all(feature = "target_vanadium_ledger", feature = "target_wasm"),
+))]
 compile_error!(
-    "Features `target_native` and `target_vanadium_ledger` are mutually exclusive. Enable only one."
+    "Features `target_native`, `target_vanadium_ledger` and `target_wasm` are mutually exclusive. Enable only one."
 );
 
-#[cfg(not(any(feature = "target_native", feature = "target_vanadium_ledger")))]
-compile_error!("Either `target_native` or `target_vanadium_ledger` feature must be enabled.");
+#[cfg(not(any(
+    feature = "target_native",
+    feature = "target_vanadium_ledger",
+    feature = "target_wasm"
+)))]
+compile_error!(
+    "One of `target_native`, `target_vanadium_ledger` or `target_wasm` must be enabled."
+);
 
 #[cfg(all(feature = "native-window", not(feature = "target_native")))]
 compile_error!("Feature `native-window` is only available with `target_native`.");
@@ -45,6 +55,9 @@ mod ecalls_riscv;
 
 #[cfg(feature = "target_native")]
 mod ecalls_native;
+
+#[cfg(feature = "target_wasm")]
+mod ecalls_wasm;
 
 #[cfg(all(feature = "target_native", feature = "native-window"))]
 mod native_window;

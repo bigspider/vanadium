@@ -4,6 +4,9 @@ use crate::ecalls_riscv as ecalls_module;
 #[cfg(feature = "target_native")]
 use crate::ecalls_native as ecalls_module;
 
+#[cfg(feature = "target_wasm")]
+use crate::ecalls_wasm as ecalls_module;
+
 use common::ux::EventData;
 
 /// Macro to forward unsafe function calls to the `ecalls_module`.

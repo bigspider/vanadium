@@ -66,6 +66,13 @@ target_vanadium_ledger = [
     "dep:embedded-alloc",
     "vanadium-ecalls/target_vanadium_ledger",
 ]
+# Run a V-App inside a web page (wasm32-unknown-unknown). std is available (minus
+# net/threads/fs), so this mirrors target_native's structure with I/O bridged to the JS
+# host. See app-sdk/src/ecalls_wasm.rs and the cooperative runtime.
+target_wasm = [
+    "common/target_wasm",
+    "embedded-graphics",
+]
 
 # Enable this in V-App's dev-dependencies
 test-mode = []

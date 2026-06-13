@@ -22,6 +22,7 @@ postcard = { version = "1.0.8", default-features = false, features = ["alloc"] }
 default = ["target_native"]
 target_native = []
 target_vanadium_ledger = []
+target_wasm = []
 
 # This feature should only be used in the build.rs script app-sdk crate
 wrapped_serializable = []
