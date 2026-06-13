@@ -33,3 +33,6 @@ speculos_stderr.log
 
 # Native target screen dump (also mirrored to the browser viewer)
 vapp_screen.ppm
+
+# WebAssembly build artifacts
+*.wasm

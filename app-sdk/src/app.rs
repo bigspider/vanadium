@@ -104,6 +104,13 @@ where
         }
     }
 
+    /// Builds the App for the cooperative wasm runtime (architecture A), where JS drives
+    /// the app one command at a time instead of an in-process loop owning the thread.
+    #[cfg(feature = "target_wasm")]
+    pub fn build_wasm(self) -> App<S> {
+        self.build()
+    }
+
     /// This function shows the dashboard, then enters the core loop of the app.
     /// It never returns, as it keeps the app running until sdk::exit() is called,
     /// or a fatal error occurs.
@@ -523,6 +530,20 @@ where
                 crate::comm::send_message(&resp_msg);
             }
         })
+    }
+
+    /// Runs the message handler for a single command to completion and returns its
+    /// response, for the cooperative wasm runtime (architecture A). This drives the same
+    /// `handler` that `run_loop` would, but one command per call so JS keeps control of
+    /// the event loop.
+    ///
+    /// This blocks the handler future to completion, so it is for request/response
+    /// handlers that do not await user input. UI flows (which await `get_event`) need a
+    /// step-based driver instead, added when the display backend is wired up.
+    #[cfg(feature = "target_wasm")]
+    pub fn dispatch_blocking(&mut self, cmd: &[u8]) -> Vec<u8> {
+        let handler = self.handler;
+        block_on(handler(self, cmd))
     }
 
     /// This is only useful to produce a valid app instance in tests.

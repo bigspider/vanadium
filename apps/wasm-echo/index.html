@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<!--
+  Browser demo: a Vanadium V-App (the echo handler) running entirely in the page as
+  WebAssembly, with no server. Serve this directory over http (the built wasm must sit
+  next to it as `wasm_echo.wasm`) and open it:
+
+    cargo build --target wasm32-unknown-unknown
+    cp target/wasm32-unknown-unknown/debug/wasm_echo.wasm .
+    python3 -m http.server   # then open http://localhost:8000/
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Vanadium V-App in WASM — echo demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; }
+  #log { white-space: pre-wrap; background: #111; color: #ddd; padding: 12px;
+         border-radius: 8px; min-height: 120px; }
+  input { font: inherit; width: 70%; padding: 6px; }
+  button { font: inherit; padding: 6px 14px; }
+</style>
+</head>
+<body>
+<h1>Vanadium V-App running in WebAssembly</h1>
+<p>The "echo" V-App handler runs entirely in your browser — no server, no device.</p>
+<p>
+  <input id="cmd" value="hello vanadium" />
+  <button id="send" disabled>Send</button>
+</p>
+<div id="log">loading wasm…</div>
+
+<script type="module">
+const log = (s) => { document.getElementById("log").textContent += s + "\n"; };
+const dec = new TextDecoder();
+const enc = new TextEncoder();
+
+let mem;
+const env = {
+  host_print: (ptr, len) => log("[vapp] " + dec.decode(new Uint8Array(mem.buffer, ptr, len))),
+  host_random: (ptr, len) => crypto.getRandomValues(new Uint8Array(mem.buffer, ptr, len)),
+  host_exit: (code) => { throw new Error("vapp exited: " + code); },
+  host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(new Uint8Array(mem.buffer, ptr, len))); },
+};
+
+const { instance } = await WebAssembly.instantiateStreaming(fetch("wasm_echo.wasm"), { env });
+const ex = instance.exports;
+mem = ex.memory;
+ex.app_init();
+
+function send(str) {
+  const buf = enc.encode(str);
+  if (buf.length > ex.io_cap()) throw new Error("command too large");
+  new Uint8Array(mem.buffer, ex.io_ptr(), buf.length).set(buf);
+  const n = ex.app_send(buf.length);
+  return dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), n));
+}
+
+document.getElementById("log").textContent = "wasm ready.\n";
+const btn = document.getElementById("send");
+const input = document.getElementById("cmd");
+btn.disabled = false;
+const go = () => log(`> ${input.value}\n< ${send(input.value)}`);
+btn.addEventListener("click", go);
+input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+</script>
+</body>
+</html>
