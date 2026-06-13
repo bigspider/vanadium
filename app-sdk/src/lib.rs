@@ -9,6 +9,9 @@ compile_error!(
 #[cfg(not(any(feature = "target_native", feature = "target_vanadium_ledger")))]
 compile_error!("Either `target_native` or `target_vanadium_ledger` feature must be enabled.");
 
+#[cfg(all(feature = "native-window", not(feature = "target_native")))]
+compile_error!("Feature `native-window` is only available with `target_native`.");
+
 extern crate alloc;
 
 #[cfg(feature = "target_native")]
@@ -42,6 +45,9 @@ mod ecalls_riscv;
 
 #[cfg(feature = "target_native")]
 mod ecalls_native;
+
+#[cfg(all(feature = "target_native", feature = "native-window"))]
+mod native_window;
 
 #[cfg(feature = "target_vanadium_ledger")]
 use embedded_alloc::Heap;

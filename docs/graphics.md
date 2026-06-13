@@ -413,6 +413,27 @@ Environment knobs:
 | `VAPP_NATIVE_INPUT=1` | Read synthetic events from stdin instead; takes precedence over the viewer for scripting. |
 | `VAPP_SCREEN_PPM` | Path for the PPM dump (default `vapp_screen.ppm`). |
 
+### Native window (`native-window` feature)
+
+By default the viewer is just served over HTTP and you point a browser at the URL. The
+opt-in `native-window` feature instead opens the simulator automatically in a real OS
+window (an embedded webview loading the same local viewer), so it looks and behaves like
+a standalone device window — no browser step.
+
+It is gated behind a feature so the default build stays dependency-free. A V-App forwards
+it from its own `Cargo.toml` (`native-window = ["sdk/native-window"]`) and is run with,
+e.g., `cargo run --features native-window`. The window owns the process's main thread (a
+hard requirement on macOS), so `App::run` moves the app loop to a worker thread; closing
+the window exits the process.
+
+- **Linux** needs WebKitGTK: `sudo apt install libwebkit2gtk-4.1-dev` (and GTK 3).
+  macOS and Windows use the system webview, so no extra package is required.
+- The webview just loads the HTTP viewer, so all the env knobs above still apply
+  (`VAPP_DEVICE`, `VAPP_SCREEN_SIZE`, …); `VAPP_HEADLESS=1` skips the window entirely.
+- On headless / software-GL displays (e.g. some VNC or SSH-forwarded X servers) WebKitGTK
+  may render blank; the usual workarounds (`WEBKIT_DISABLE_COMPOSITING_MODE=1`,
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`) apply, or just use the browser viewer there.
+
 ## Implementation checklist (per docs/ecalls.md)
 
 - [x] constants in [`common/src/ecall_constants.rs`](../common/src/ecall_constants.rs)

@@ -104,10 +104,44 @@ where
         }
     }
 
+}
+
+/// Default `run`: drive the app loop on the current (main) thread.
+#[cfg(not(all(feature = "target_native", feature = "native-window")))]
+impl<S: Default> AppBuilder<S> {
     /// This function shows the dashboard, then enters the core loop of the app.
     /// It never returns, as it keeps the app running until sdk::exit() is called,
     /// or a fatal error occurs.
     pub fn run(self) -> ! {
+        self.build().run_loop()
+    }
+}
+
+/// `native-window` build: host the viewer in an OS window on the main thread and run the
+/// app loop on a worker. The extra `S: 'static` bound is because the builder crosses to
+/// the worker thread — every real app state already satisfies it.
+#[cfg(all(feature = "target_native", feature = "native-window"))]
+impl<S: Default + 'static> AppBuilder<S> {
+    /// This function shows the dashboard, then enters the core loop of the app.
+    /// It never returns, as it keeps the app running until sdk::exit() is called,
+    /// or a fatal error occurs.
+    pub fn run(self) -> ! {
+        // The window's event loop must own the main thread (required on macOS), so the app
+        // loop moves to a worker thread. `AppBuilder` is `Send` (its handler is a plain fn
+        // pointer). Headless runs (or a failed bind) fall through to the normal in-thread
+        // loop with no window.
+        if let Some(url) = crate::native_window::should_open() {
+            // Make a panic anywhere fatal, so a dead app thread can't leave an orphan window.
+            std::panic::set_hook(Box::new(|info| {
+                eprintln!("{info}");
+                std::process::exit(1);
+            }));
+            std::thread::Builder::new()
+                .name("vapp".into())
+                .spawn(move || self.build().run_loop())
+                .expect("failed to spawn the app thread");
+            crate::native_window::run(url); // blocks on the main thread; never returns
+        }
         self.build().run_loop()
     }
 }

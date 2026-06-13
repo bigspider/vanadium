@@ -11,6 +11,9 @@ stack_size = 65536
 default = ["target_native"]
 target_native = ["sdk/target_native", "sdk/embedded-graphics"]
 target_vanadium_ledger = ["sdk/target_vanadium_ledger", "sdk/embedded-graphics"]
+# Native dev only: show the simulator in an OS window (embedded webview) instead of a
+# browser. Needs WebKitGTK on Linux (libwebkit2gtk-4.1-dev).
+native-window = ["sdk/native-window"]
 
 [dependencies]
 bs58 = { version = "0.5.1", default-features = false, features = ["alloc"] }

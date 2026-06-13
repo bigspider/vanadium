@@ -1099,6 +1099,16 @@ pub fn display_font_metrics(font: u32) -> i32 {
 // framebuffer version; `POST /input` delivers an event. The page computes device
 // coordinates itself, so the server only maps JSON to `EventData`.
 // ===========================================================================
+
+/// Ensures the viewer HTTP server is running and returns its URL, for the optional
+/// `native-window` feature to host in an embedded webview. `None` when the viewer is
+/// disabled (headless / tests) or could not bind.
+#[cfg(feature = "native-window")]
+pub(crate) fn webui_url() -> Option<String> {
+    webui::ensure_started();
+    webui::url()
+}
+
 mod webui {
     use super::{store_new_event, VirtualScreen, DEVICE_PROFILE};
     use std::io::{Read, Write};
@@ -1135,6 +1145,18 @@ mod webui {
     static WEBUI_START: Once = Once::new();
     static WEBUI_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+    // The bound viewer URL, recorded for the optional `native-window` feature to point an
+    // embedded webview at the same local server the browser would use.
+    #[cfg(feature = "native-window")]
+    lazy_static::lazy_static! {
+        static ref VIEWER_URL: Mutex<Option<String>> = Mutex::new(None);
+    }
+
+    #[cfg(feature = "native-window")]
+    pub fn url() -> Option<String> {
+        VIEWER_URL.lock().expect("Viewer URL mutex poisoned").clone()
+    }
+
     // The viewer is off in unit tests (no port binding) and when explicitly disabled with
     // VAPP_HEADLESS — e.g. on CI or for scripted, stdin-driven runs.
     fn enabled() -> bool {
@@ -1163,6 +1185,11 @@ mod webui {
             Some((listener, addr)) => {
                 eprintln!("Viewer: open http://{addr} in a browser");
                 WEBUI_ACTIVE.store(true, Ordering::SeqCst);
+                #[cfg(feature = "native-window")]
+                {
+                    *VIEWER_URL.lock().expect("Viewer URL mutex poisoned") =
+                        Some(format!("http://{addr}"));
+                }
                 std::thread::Builder::new()
                     .name("vapp-webui".into())
                     .spawn(move || serve(listener))
