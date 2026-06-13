@@ -38,6 +38,11 @@ sha3 = { version = "0.10", optional = true }
 default = ["target_native"]
 target_native = [
     "common/target_native",
+    # The native backend rasterizes text into the virtual framebuffer with
+    # embedded-graphics, so the simulator/browser viewer shows the same text the
+    # device draws. Pulled in unconditionally so a plain `cargo build` (default
+    # features) renders text without each V-App having to opt in.
+    "embedded-graphics",
     "dep:bip32",
     "dep:hex",
     "dep:hmac",
