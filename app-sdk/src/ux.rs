@@ -32,36 +32,23 @@ pub fn has_page_api() -> bool {
     ecalls::get_device_property(DEVICE_PROPERTY_FEATURES) & FEATURE_TOUCH != 0
 }
 
-/// Blocks until an event is received, then returns it.
+/// Blocks until an event is received, then returns it. The blocking happens inside the
+/// `ecalls::get_event` call (it sleeps a ticker period); this just decodes the result.
 pub async fn get_event() -> Event {
-    loop {
-        let mut event_data = EventData::default();
-        // SAFETY: event_data is a properly aligned, initialized EventData on the stack.
-        let event_code = EventCode::from(unsafe { ecalls::get_event(&mut event_data) });
-        match event_code {
-            EventCode::Ticker => {
-                // Give a chance to the executor to make progress on registered tasks
-                crate::executor::yield_now().await;
-
-                return Event::Ticker;
-            }
-            EventCode::Action => {
-                let action = unsafe { event_data.action };
-                return Event::Action(action);
-            }
-            EventCode::Touch => {
-                let touch = unsafe { event_data.touch };
-                return Event::Touch(touch);
-            }
-            EventCode::Button => {
-                let button = unsafe { event_data.button };
-                return Event::Button(button);
-            }
-            EventCode::Unknown => {
-                let data = unsafe { event_data.raw };
-                return Event::Unknown(data);
-            }
+    let mut event_data = EventData::default();
+    // SAFETY: event_data is a properly aligned, initialized EventData on the stack.
+    let event_code = EventCode::from(unsafe { ecalls::get_event(&mut event_data) });
+    match event_code {
+        EventCode::Ticker => {
+            // Give a chance to the executor to make progress on registered tasks
+            crate::executor::yield_now().await;
+            Event::Ticker
         }
+        // SAFETY: each event code selects the matching union field, written by the VM.
+        EventCode::Action => Event::Action(unsafe { event_data.action }),
+        EventCode::Touch => Event::Touch(unsafe { event_data.touch }),
+        EventCode::Button => Event::Button(unsafe { event_data.button }),
+        EventCode::Unknown => Event::Unknown(unsafe { event_data.raw }),
     }
 }
 
