@@ -422,17 +422,19 @@ a standalone device window — no browser step.
 
 It is a cargo feature (off by default in the SDK) so a build can drop it and stay
 dependency-free. A V-App forwards it from its own `Cargo.toml`
-(`native-window = ["sdk/native-window"]`); vnd-bitcoin puts it in its **default**
-features, so `cargo run` opens the window. To get the dependency-free browser viewer
-instead (and not require WebKitGTK), build without it:
+(`native-window = ["sdk/native-window"]`); the example apps (vnd-test, vnd-bitcoin) put
+it in their **default** features, so `cargo run` opens the window. To get the
+dependency-free browser viewer instead (and not require WebKitGTK), build without it:
 `cargo run --no-default-features --features target_native`.
 
-The window is hosted by `AppBuilder::run`: it owns the process's main thread (a hard
-requirement on macOS), so `run` moves the app loop to a worker thread and closing the
-window exits the process. **An app must use `AppBuilder::run` to get a window** — a V-App
-with its own bare `main` loop (e.g. vnd-test) always uses the browser viewer. On Linux
-the webview attaches to the window's GTK container, so it works under both X11 and
-Wayland.
+The window is launched by the display backend on the first frame (from
+`webui::ensure_started`), **not** by `App::run`, so it works for any V-App regardless of
+how `main` is structured (e.g. vnd-test's bare loop gets one too). Its event loop runs on
+a dedicated background thread — allowed off the main thread on Linux and Windows — and
+closing the window exits the process. On Linux the webview attaches to the window's GTK
+container, so it works under both X11 and Wayland. macOS requires the event loop to own
+the *main* thread, which can't be claimed from an arbitrary app's `main`, so there the
+browser viewer is used instead (the URL is printed at startup).
 
 - **Linux** needs WebKitGTK: `sudo apt install libwebkit2gtk-4.1-dev` (and GTK 3).
   macOS and Windows use the system webview, so no extra package is required.
