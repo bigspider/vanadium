@@ -59,6 +59,9 @@ mod ecalls_native;
 #[cfg(feature = "target_wasm")]
 mod ecalls_wasm;
 
+#[cfg(feature = "target_wasm")]
+pub mod wasm_runtime;
+
 #[cfg(all(feature = "target_native", feature = "native-window"))]
 mod native_window;
 

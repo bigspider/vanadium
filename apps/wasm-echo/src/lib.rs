@@ -26,11 +26,32 @@ thread_local! {
 }
 
 /// The V-App's message handler — the same seam `AppBuilder` drives on every target.
+/// It draws the idle screen via the real SDK drawing path (so the page has something to
+/// render) and echoes the command back.
 #[sdk::handler]
 async fn process(_app: &mut App, msg: &[u8]) -> Vec<u8> {
+    sdk::ux::ux_idle();
     let mut out = b"echo:".to_vec();
     out.extend_from_slice(msg);
     out
+}
+
+// --- framebuffer accessors for the page (paints it to a <canvas>) ---
+#[no_mangle]
+pub extern "C" fn fb_ptr() -> *const u8 {
+    sdk::wasm_runtime::framebuffer_ptr()
+}
+#[no_mangle]
+pub extern "C" fn fb_width() -> usize {
+    sdk::wasm_runtime::framebuffer_width()
+}
+#[no_mangle]
+pub extern "C" fn fb_height() -> usize {
+    sdk::wasm_runtime::framebuffer_height()
+}
+#[no_mangle]
+pub extern "C" fn fb_version() -> u64 {
+    sdk::wasm_runtime::framebuffer_version()
 }
 
 /// Pointer to the shared IO buffer (JS writes the command here, reads the response here).

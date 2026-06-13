@@ -110,47 +110,299 @@ pub unsafe fn get_random_bytes(buffer: *mut u8, size: usize) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Display — stubs, to be wired to a <canvas> via the runtime (reusing the webui
-// frame/input protocol).
+// Display — a software framebuffer (flex profile: 480×600 Gray4), ported from the
+// native backend. `display_refresh` bumps a version; the page reads the framebuffer (via
+// the `wasm_runtime` accessors) and paints it to a <canvas> — the webui frame protocol,
+// but over direct memory reads instead of HTTP. (The native backend's full device-profile
+// matrix will be shared with this backend later; for now it is fixed to flex.)
 // ---------------------------------------------------------------------------
+const FB_WIDTH: usize = 480;
+const FB_HEIGHT: usize = 600;
+
+struct Framebuffer {
+    pixels: Vec<u8>, // intensity 0..=15, one byte per pixel
+    version: u64,
+}
+
+static FB: Mutex<Framebuffer> = Mutex::new(Framebuffer {
+    pixels: Vec::new(),
+    version: 0,
+});
+
+fn with_fb<R>(f: impl FnOnce(&mut Framebuffer) -> R) -> R {
+    let mut fb = FB.lock().expect("FB poisoned");
+    if fb.pixels.len() != FB_WIDTH * FB_HEIGHT {
+        fb.pixels = vec![0u8; FB_WIDTH * FB_HEIGHT];
+    }
+    f(&mut fb)
+}
+
+// Accessors for the runtime / page. The framebuffer is allocated once and never resized,
+// so the pointer is stable; single-threaded wasm makes the unsynchronized JS read safe.
+pub(crate) fn framebuffer_ptr() -> *const u8 {
+    with_fb(|fb| fb.pixels.as_ptr())
+}
+pub(crate) fn framebuffer_dims() -> (usize, usize) {
+    (FB_WIDTH, FB_HEIGHT)
+}
+pub(crate) fn framebuffer_version() -> u64 {
+    FB.lock().expect("FB poisoned").version
+}
+
+// Flex (Gray4) accelerated-color quantization: the normative 4-entry palette, expanded to
+// 4bpp like the device's EXPAND_TO_4BPP.
+fn accel_intensity(rgb: u32) -> u8 {
+    let c = common::ecall_constants::rgb888_to_palette(rgb);
+    (c << 2) | c
+}
+
+fn decode_pixel(
+    buffer: &[u8],
+    format: common::ecall_constants::PixelFormat,
+    stride: usize,
+    row: usize,
+    col: usize,
+) -> u8 {
+    use common::ecall_constants::PixelFormat;
+    match format {
+        PixelFormat::Mono1 => {
+            let byte = buffer[row * stride + col / 8];
+            let bit = 7 - (col % 8);
+            if (byte >> bit) & 1 == 1 { 15 } else { 0 }
+        }
+        PixelFormat::Gray4 => {
+            let byte = buffer[row * stride + col / 2];
+            if col % 2 == 0 { byte >> 4 } else { byte & 0x0f }
+        }
+    }
+}
+
 pub unsafe fn display_blit(
-    _dst: u32,
-    _size: u32,
-    _buffer: *const u8,
-    _buffer_len: usize,
-    _src: u32,
-    _src_stride: u32,
-    _format: u32,
+    dst: u32,
+    size: u32,
+    buffer: *const u8,
+    buffer_len: usize,
+    src: u32,
+    src_stride: u32,
+    format: u32,
 ) -> i32 {
+    use common::ecall_constants::*;
+    let Some(format) = PixelFormat::from_u32(format) else {
+        return display_unknown_enum_err(format);
+    };
+    let (x, y) = display_unpack_pair(dst);
+    let (w, h) = display_unpack_pair(size);
+    let (src_x, src_y) = display_unpack_pair(src);
+    let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+    let (src_x, src_y, src_stride) = (src_x as usize, src_y as usize, src_stride as usize);
+    if w == 0 || h == 0 {
+        return 0;
+    }
+    if x + w > FB_WIDTH || y + h > FB_HEIGHT {
+        return DISPLAY_ERR_OUT_OF_BOUNDS;
+    }
+    // flex granularity (1,4,1,4)
+    if y % 4 != 0 || h % 4 != 0 {
+        return DISPLAY_ERR_ALIGNMENT;
+    }
+    let bpp = format.bits_per_pixel();
+    let row_end = ((src_x + w) * bpp).div_ceil(8);
+    let required = (src_y + h - 1) as u64 * src_stride as u64 + row_end as u64;
+    if required > buffer_len as u64 {
+        return DISPLAY_ERR_BAD_LAYOUT;
+    }
+    // SAFETY: caller guarantees [buffer, buffer+buffer_len) is valid and readable.
+    let data = unsafe { std::slice::from_raw_parts(buffer, buffer_len) };
+    with_fb(|fb| {
+        for row in 0..h {
+            for col in 0..w {
+                let intensity = decode_pixel(data, format, src_stride, src_y + row, src_x + col);
+                fb.pixels[(y + row) * FB_WIDTH + (x + col)] = intensity;
+            }
+        }
+    });
     0
 }
 
-pub unsafe fn display_refresh(_pos: u32, _size: u32, _mode: u32) -> i32 {
+pub unsafe fn display_refresh(_pos: u32, size: u32, mode: u32) -> i32 {
+    use common::ecall_constants::*;
+    if RefreshMode::from_u32(mode).is_none() {
+        return display_unknown_enum_err(mode);
+    }
+    let (w, h) = display_unpack_pair(size);
+    if w == 0 || h == 0 {
+        return 0;
+    }
+    // The whole framebuffer is presented; just publish a new version for the page.
+    with_fb(|fb| fb.version += 1);
     0
 }
 
-pub unsafe fn display_fill_rect(_pos: u32, _size: u32, _color: u32) -> i32 {
+pub unsafe fn display_fill_rect(pos: u32, size: u32, color: u32) -> i32 {
+    use common::ecall_constants::*;
+    if !rgb888_is_valid(color) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
+    let (x, y) = display_unpack_pair(pos);
+    let (w, h) = display_unpack_pair(size);
+    if w == 0 || h == 0 {
+        return 0;
+    }
+    if (x + w) as usize > FB_WIDTH || (y + h) as usize > FB_HEIGHT {
+        return DISPLAY_ERR_OUT_OF_BOUNDS;
+    }
+    let intensity = accel_intensity(color);
+    with_fb(|fb| {
+        for row in y as usize..(y + h) as usize {
+            for col in x as usize..(x + w) as usize {
+                fb.pixels[row * FB_WIDTH + col] = intensity;
+            }
+        }
+    });
     0
+}
+
+// embedded-graphics font mapping + DrawTarget over the framebuffer (same approach as the
+// native backend's best-effort text rasterization).
+fn wasm_mono_font(font: u32) -> &'static embedded_graphics::mono_font::MonoFont<'static> {
+    use common::ecall_constants::Font;
+    use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_9X15, FONT_9X15_BOLD};
+    match Font::from_u32(font) {
+        Some(Font::Bold) => &FONT_9X15_BOLD,
+        Some(Font::Large) => &FONT_10X20,
+        _ => &FONT_9X15,
+    }
+}
+
+fn wasm_font_dims(font: u32) -> (u32, u32, u32) {
+    let f = wasm_mono_font(font);
+    let cw = f.character_size.width + f.character_spacing;
+    let h = f.character_size.height;
+    (cw, h, h + 2)
+}
+
+struct FbTarget<'a> {
+    fb: &'a mut Framebuffer,
+}
+
+impl embedded_graphics::draw_target::DrawTarget for FbTarget<'_> {
+    type Color = embedded_graphics::pixelcolor::Gray4;
+    type Error = core::convert::Infallible;
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        use embedded_graphics::prelude::*;
+        for embedded_graphics::Pixel(p, c) in pixels {
+            if p.x >= 0 && p.y >= 0 && (p.x as usize) < FB_WIDTH && (p.y as usize) < FB_HEIGHT {
+                self.fb.pixels[p.y as usize * FB_WIDTH + p.x as usize] = c.luma();
+            }
+        }
+        Ok(())
+    }
+}
+
+impl embedded_graphics::geometry::OriginDimensions for FbTarget<'_> {
+    fn size(&self) -> embedded_graphics::geometry::Size {
+        embedded_graphics::geometry::Size::new(FB_WIDTH as u32, FB_HEIGHT as u32)
+    }
 }
 
 pub unsafe fn display_draw_text(
-    _pos: u32,
-    _size: u32,
-    _text: *const u8,
-    _text_len: usize,
-    _font: u32,
-    _color: u32,
-    _bg: u32,
+    pos: u32,
+    size: u32,
+    text: *const u8,
+    text_len: usize,
+    font: u32,
+    color: u32,
+    bg: u32,
 ) -> i32 {
+    use common::ecall_constants::*;
+    if Font::from_u32(font).is_none() {
+        return display_unknown_enum_err(font);
+    }
+    if !rgb888_is_valid(color) || !rgb888_is_valid(bg) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
+    let (x, y) = display_unpack_pair(pos);
+    let (w, h) = display_unpack_pair(size);
+    if w == 0 || h == 0 {
+        return 0;
+    }
+    if (x + w) as usize > FB_WIDTH || (y + h) as usize > FB_HEIGHT {
+        return DISPLAY_ERR_OUT_OF_BOUNDS;
+    }
+    if text_len > DISPLAY_MAX_TEXT_LEN {
+        return DISPLAY_ERR_TOO_LONG;
+    }
+    // SAFETY: caller guarantees [text, text+text_len) is valid readable memory.
+    let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
+    let Ok(s) = core::str::from_utf8(bytes) else {
+        return DISPLAY_ERR_INVALID_ARG;
+    };
+    if bytes.contains(&0) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
+    let (cw, fh, _) = wasm_font_dims(font);
+    let bg_i = accel_intensity(bg);
+    let fg = accel_intensity(color);
+    with_fb(|fb| {
+        // Fill the box with the background.
+        for row in y as usize..(y + h) as usize {
+            for col in x as usize..(x + w) as usize {
+                fb.pixels[row * FB_WIDTH + col] = bg_i;
+            }
+        }
+        if fh <= h as u32 {
+            use embedded_graphics::{
+                mono_font::MonoTextStyle,
+                pixelcolor::Gray4,
+                prelude::*,
+                text::{Baseline, Text},
+            };
+            let fit = (w / cw) as usize;
+            let fitted: String = s.chars().take(fit).collect();
+            let style = MonoTextStyle::new(wasm_mono_font(font), Gray4::new(fg));
+            let mut target = FbTarget { fb };
+            let _ = Text::with_baseline(
+                &fitted,
+                Point::new(x as i32, y as i32),
+                style,
+                Baseline::Top,
+            )
+            .draw(&mut target);
+        }
+    });
     0
 }
 
-pub unsafe fn display_text_width(_font: u32, _text: *const u8, _text_len: usize) -> i32 {
-    0
+pub unsafe fn display_text_width(font: u32, text: *const u8, text_len: usize) -> i32 {
+    use common::ecall_constants::*;
+    if Font::from_u32(font).is_none() {
+        return display_unknown_enum_err(font);
+    }
+    if text_len > DISPLAY_MAX_TEXT_LEN {
+        return DISPLAY_ERR_TOO_LONG;
+    }
+    // SAFETY: caller guarantees [text, text+text_len) is valid readable memory.
+    let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
+    let Ok(s) = core::str::from_utf8(bytes) else {
+        return DISPLAY_ERR_INVALID_ARG;
+    };
+    if bytes.contains(&0) {
+        return DISPLAY_ERR_INVALID_ARG;
+    }
+    let (cw, _, _) = wasm_font_dims(font);
+    (s.chars().count() as u32 * cw) as i32
 }
 
-pub unsafe fn display_font_metrics(_font: u32) -> i32 {
-    0
+pub unsafe fn display_font_metrics(font: u32) -> i32 {
+    use common::ecall_constants::*;
+    if Font::from_u32(font).is_none() {
+        return display_unknown_enum_err(font);
+    }
+    let (_, height, line_height) = wasm_font_dims(font);
+    ((height << 16) | line_height) as i32
 }
 
 // ---------------------------------------------------------------------------

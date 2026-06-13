@@ -22,11 +22,13 @@
 </head>
 <body>
 <h1>Vanadium V-App running in WebAssembly</h1>
-<p>The "echo" V-App handler runs entirely in your browser — no server, no device.</p>
+<p>The V-App handler runs entirely in your browser — no server, no device. Sending a
+   command runs the handler, which draws its screen; the framebuffer is painted below.</p>
 <p>
   <input id="cmd" value="hello vanadium" />
   <button id="send" disabled>Send</button>
 </p>
+<canvas id="screen" style="border:1px solid #ccc; image-rendering: pixelated;"></canvas>
 <div id="log">loading wasm…</div>
 
 <script type="module">
@@ -55,13 +57,29 @@ function send(str) {
   return dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), n));
 }
 
+// Paint the V-App framebuffer (one byte/pixel, intensity 0..15) onto the canvas.
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d");
+function paint() {
+  const w = ex.fb_width(), h = ex.fb_height();
+  if (canvas.width !== w) { canvas.width = w; canvas.height = h; canvas.style.width = w + "px"; }
+  const fb = new Uint8Array(mem.buffer, ex.fb_ptr(), w * h);
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < fb.length; i++) {
+    const v = Math.round((fb[i] * 255) / 15);
+    img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 document.getElementById("log").textContent = "wasm ready.\n";
 const btn = document.getElementById("send");
 const input = document.getElementById("cmd");
 btn.disabled = false;
-const go = () => log(`> ${input.value}\n< ${send(input.value)}`);
+const go = () => { log(`> ${input.value}\n< ${send(input.value)}`); paint(); };
 btn.addEventListener("click", go);
 input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+paint();
 </script>
 </body>
 </html>

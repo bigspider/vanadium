@@ -36,3 +36,6 @@ vapp_screen.ppm
 
 # WebAssembly build artifacts
 *.wasm
+
+# wasm-echo framebuffer dump (test artifact)
+apps/wasm-echo/wasm_fb.png
