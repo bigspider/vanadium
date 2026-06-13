@@ -47,6 +47,10 @@ const SLIP21_MAGIC: &'static str = "Symmetric key seed";
 
 const TICKER_MS: u64 = 100;
 
+// When the interactive viewer is running, xrecv polls with this timeout so an idle app
+// reports "no message" instead of blocking — letting the run-loop keep processing UX.
+const XRECV_IDLE_POLL_MS: u64 = 50;
+
 unsafe fn to_bigint(bytes: *const u8, len: usize) -> BigUint {
     let bytes = unsafe {std::slice::from_raw_parts(bytes, len)};
     BigUint::from_bytes_be(bytes)
@@ -286,6 +290,21 @@ pub fn xrecv(_buffer: *mut u8, _max_size: usize) -> usize {
 pub fn xrecv(buffer: *mut u8, max_size: usize) -> usize {
     let mut stream = TCP_CONN.lock().expect("TCP mutex poisoned");
 
+    // The device's xrecv is non-blocking: it returns 0 ("no message") when idle, which is
+    // what lets an app's run-loop keep processing UX between commands — ticking the
+    // dashboard-cleanup timer back to the home screen and pumping the display. Mirror that
+    // when the interactive viewer is running, by polling with a read timeout; otherwise
+    // (headless / scripted / CI) keep the simple blocking behavior and its exact timing.
+    if webui::active() {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(XRECV_IDLE_POLL_MS)));
+        xrecv_polling(&mut stream, buffer, max_size)
+    } else {
+        xrecv_blocking(&mut stream, buffer, max_size)
+    }
+}
+
+#[cfg(not(feature = "test-mode"))]
+fn xrecv_blocking(stream: &mut TcpStream, buffer: *mut u8, max_size: usize) -> usize {
     // Read the 4-byte length header first.
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).expect("TCP read failed");
@@ -301,6 +320,50 @@ pub fn xrecv(buffer: *mut u8, max_size: usize) -> usize {
     // Read the payload.
     let slice = unsafe { std::slice::from_raw_parts_mut(buffer, expected) };
     stream.read_exact(slice).expect("TCP read failed");
+    expected
+}
+
+#[cfg(not(feature = "test-mode"))]
+fn xrecv_polling(stream: &mut TcpStream, buffer: *mut u8, max_size: usize) -> usize {
+    use std::io::ErrorKind;
+    let would_block =
+        |e: &std::io::Error| matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut);
+
+    // Read the 4-byte length header. A timeout *before any byte arrives* means the socket
+    // is idle -> report "no message". Real traffic (a command, a chunk, an ACK) arrives
+    // within the timeout, so once the frame has started we read it through to the end.
+    let mut len_buf = [0u8; 4];
+    let mut filled = 0;
+    while filled < len_buf.len() {
+        match stream.read(&mut len_buf[filled..]) {
+            Ok(0) => std::process::exit(0), // host disconnected: nothing left to serve
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(ref e) if would_block(e) && filled == 0 => return 0, // idle
+            Err(ref e) if would_block(e) => continue, // partial header: frame is in flight
+            Err(e) => panic!("TCP read failed: {e}"),
+        }
+    }
+
+    let expected = u32::from_be_bytes(len_buf) as usize;
+    if expected > max_size {
+        panic!(
+            "Peer wants to send {} bytes but caller only provided {}-byte buffer",
+            expected, max_size
+        );
+    }
+
+    // The payload belongs to the same frame: read it fully, waiting through idle timeouts.
+    let slice = unsafe { std::slice::from_raw_parts_mut(buffer, expected) };
+    let mut filled = 0;
+    while filled < slice.len() {
+        match stream.read(&mut slice[filled..]) {
+            Ok(0) => std::process::exit(0),
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == ErrorKind::Interrupted || would_block(e) => continue,
+            Err(e) => panic!("TCP read failed: {e}"),
+        }
+    }
     expected
 }
 

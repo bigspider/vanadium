@@ -303,6 +303,10 @@ async fn spawn_native_vapp_and_connect(vapp_binary: &str) -> (Child, NativeAppCl
         let mut child = Command::new(vapp_binary)
             .env("VAPP_ADDRESS", &addr)
             .env("VAPP_STORAGE_FILE", &storage_file)
+            // Integration tests drive the app over TCP and need no interactive viewer; run
+            // headless so xrecv keeps its fast blocking behavior (no polling latency, no
+            // port binding).
+            .env("VAPP_HEADLESS", "1")
             .stdout(Stdio::from(stdout_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()
