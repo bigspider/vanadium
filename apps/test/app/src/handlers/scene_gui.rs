@@ -20,9 +20,6 @@ use sdk::ui::{
 };
 use sdk::ux::{Action, Button, Event, PressState, TouchState};
 
-/// On native, exit after this many idle tickers so a non-interactive run returns.
-const NATIVE_IDLE_TICKERS: u32 = 5;
-
 /// The Bitcoin logo as a 14×16 [`Gray4`](PixelFormat::Gray4) bitmap (black glyph on white,
 /// 2 px/byte, high nibble = left pixel, 7 bytes/row). Drawn via the accelerated blit path,
 /// so the host rasterizes it natively (`nbgl_frontDrawImage`) and the guest only ships
@@ -272,8 +269,6 @@ fn on_touch(l: &Layout, s: &mut State, p: Point, pressed: bool) -> bool {
 ///
 /// Returns `width(u16 BE) || height(u16 BE) || ok(u8)` (same shape as the other demos).
 pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
-    let is_native = cfg!(feature = "target_native");
-
     let (w, h) = block_on(async move {
         let mut r = ScreenRenderer::new();
         let l = layout(r.caps());
@@ -295,11 +290,9 @@ pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
         }
         scene = next;
 
-        let mut idle = 0u32;
         loop {
             let changed = match sdk::ux::get_event().await {
                 Event::Touch(te) if pointer => {
-                    idle = 0;
                     let p = Point::new(te.x as i32, te.y as i32);
                     on_touch(&l, &mut state, p, te.state == TouchState::Pressed)
                 }
@@ -310,7 +303,6 @@ pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
                 // two contacts are never simultaneous — resolves to a single `Both` release
                 // instead of letting whichever button landed first win.
                 Event::Button(btn) if !pointer => {
-                    idle = 0;
                     if btn.state == PressState::Released {
                         match btn.button {
                             Button::Left => state.counter -= 1,
@@ -320,16 +312,9 @@ pub fn handle_scene_gui(_data: &[u8]) -> Vec<u8> {
                     }
                     true
                 }
+                // The viewer's Quit/Stop control (or a host quit) ends the demo. There is no
+                // longer an idle timeout: an interactive run waits for real input.
                 Event::Action(Action::Quit) => break,
-                Event::Ticker => {
-                    if is_native {
-                        idle += 1;
-                        if idle >= NATIVE_IDLE_TICKERS {
-                            break;
-                        }
-                    }
-                    false
-                }
                 _ => false,
             };
 
