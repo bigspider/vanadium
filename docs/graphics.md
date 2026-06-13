@@ -420,11 +420,14 @@ opt-in `native-window` feature instead opens the simulator automatically in a re
 window (an embedded webview loading the same local viewer), so it looks and behaves like
 a standalone device window — no browser step.
 
-It is gated behind a feature so the default build stays dependency-free. A V-App forwards
-it from its own `Cargo.toml` (`native-window = ["sdk/native-window"]`) and is run with,
-e.g., `cargo run --features native-window`. The window owns the process's main thread (a
-hard requirement on macOS), so `App::run` moves the app loop to a worker thread; closing
-the window exits the process.
+It is a cargo feature (off by default in the SDK) so a build can drop it and stay
+dependency-free. A V-App forwards it from its own `Cargo.toml`
+(`native-window = ["sdk/native-window"]`); the example apps (vnd-test, vnd-bitcoin) put
+it in their **default** features, so `cargo run` opens the window. To get the dependency-
+free browser viewer instead (and not require WebKitGTK), build without it:
+`cargo run --no-default-features --features target_native`. The window owns the process's
+main thread (a hard requirement on macOS), so `App::run` moves the app loop to a worker
+thread; closing the window exits the process.
 
 - **Linux** needs WebKitGTK: `sudo apt install libwebkit2gtk-4.1-dev` (and GTK 3).
   macOS and Windows use the system webview, so no extra package is required.

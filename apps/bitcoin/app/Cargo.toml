@@ -9,7 +9,10 @@ stack_size = 65536
 n_storage_slots = 3
 
 [features]
-default = ["target_native"]
+# Native runs open the simulator in an OS window by default; opt out with
+# `--no-default-features --features target_native` to get the browser viewer (and drop
+# the WebKitGTK dependency).
+default = ["target_native", "native-window"]
 target_native = [
     "sdk/target_native",
     "hashes/target_native",

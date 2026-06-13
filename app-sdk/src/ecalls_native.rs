@@ -1183,7 +1183,11 @@ mod webui {
         }
         WEBUI_START.call_once(|| match bind_listener() {
             Some((listener, addr)) => {
-                eprintln!("Viewer: open http://{addr} in a browser");
+                if cfg!(feature = "native-window") {
+                    eprintln!("Opening native window (viewer also at http://{addr})");
+                } else {
+                    eprintln!("Viewer: open http://{addr} in a browser");
+                }
                 WEBUI_ACTIVE.store(true, Ordering::SeqCst);
                 #[cfg(feature = "native-window")]
                 {
