@@ -1,0 +1,28 @@
+[package]
+name = "wasm-bitcoin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sdk = { package = "vanadium-app-sdk", path = "../../app-sdk", default-features = false, features = ["target_wasm"] }
+client = { package = "vanadium-client-sdk", path = "../../client-sdk", default-features = false, features = ["wasm"] }
+# The real Bitcoin V-App (as a library) and its message protocol, built for wasm.
+vnd_bitcoin = { package = "vnd-bitcoin", path = "../bitcoin/app", default-features = false, features = ["target_wasm"] }
+btc_common = { package = "vnd-bitcoin-common", path = "../bitcoin/common", default-features = false, features = ["target_wasm"] }
+minicbor = { version = "2.2", default-features = false, features = ["alloc", "derive"] }
+
+[workspace]
+
+# The Bitcoin app's crypto crates route through the SDK ECALLs; replicate its patches here
+# (this is a separate workspace, so it doesn't inherit them).
+[patch.crates-io.bitcoin_hashes]
+path = "../../libs/bitcoin_hashes"
+[patch.crates-io.secp256k1]
+path = "../../libs/secp256k1"
+[patch.crates-io.base58ck]
+path = "../../libs/base58"
+[patch.crates-io.getrandom]
+path = "../../libs/getrandom"

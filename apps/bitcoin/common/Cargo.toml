@@ -11,6 +11,9 @@ target_native = [
 target_vanadium_ledger = [
     "sdk/target_vanadium_ledger",
 ]
+target_wasm = [
+    "sdk/target_wasm",
+]
 
 [dependencies]
 bitcoin = { version = "0.32.0", features = ["serde"], default-features = false }

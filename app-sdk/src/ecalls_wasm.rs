@@ -15,8 +15,11 @@ use std::sync::Mutex;
 use common::ux::{EventCode, EventData};
 
 // ---------------------------------------------------------------------------
-// JS host imports — provided by the page when instantiating the module.
+// JS host imports — provided by the page (in the `env` module) when instantiating.
+// The explicit `wasm_import_module` makes the linker treat these as wasm imports
+// rather than undefined symbols when they are actually called.
 // ---------------------------------------------------------------------------
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     /// Writes `len` bytes of UTF-8 at `ptr` to the host console.
     fn host_print(ptr: *const u8, len: usize);

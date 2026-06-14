@@ -26,6 +26,7 @@ lowmemory = []
 global-context = []
 target_native = ["sdk/target_native"]
 target_vanadium_ledger = ["sdk/target_vanadium_ledger"]
+target_wasm = ["sdk/target_wasm"]
 
 [dependencies]
 

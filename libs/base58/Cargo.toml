@@ -17,6 +17,7 @@ default = ["std", "target_native"]
 std = ["hashes/std", "internals/std"]
 target_native = ["hashes/target_native"]
 target_vanadium_ledger = ["hashes/target_vanadium_ledger"]
+target_wasm = ["hashes/target_wasm"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -27,6 +27,13 @@ target_vanadium_ledger = [
     "base58/target_vanadium_ledger",
     "common/target_vanadium_ledger"
 ]
+target_wasm = [
+    "sdk/target_wasm",
+    "hashes/target_wasm",
+    "secp256k1/target_wasm",
+    "base58/target_wasm",
+    "common/target_wasm"
+]
 autoapprove = []  # used for integration tests
 fixed_resident_seed = []  # always use a fixed resident seed (only for testing/development)
 # Native dev only: show the simulator in an OS window (embedded webview) instead of a

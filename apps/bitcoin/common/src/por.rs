@@ -112,7 +112,11 @@ impl<T: ?Sized> ProofOfRegistration<T> {
     ///
     /// The proof is an HMAC-SHA256 of the ID bytes, keyed with a
     /// SLIP-21-derived key at path `m/"Proof of Registration"`.
-    #[cfg(any(feature = "target_native", feature = "target_vanadium_ledger"))]
+    #[cfg(any(
+        feature = "target_native",
+        feature = "target_vanadium_ledger",
+        feature = "target_wasm"
+    ))]
     pub fn new(id: &RegistrationId<T>) -> Self {
         let por_key = sdk::slip21::derive_slip21_key(&[&POR_MAGIC]);
 

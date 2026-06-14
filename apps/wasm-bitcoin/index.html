@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<!--
+  Browser demo: the real Bitcoin V-App running entirely in the page as WebAssembly,
+  driven by a co-resident Rust client over the real Bitcoin CBOR protocol — no server,
+  no device. The page runs the GetMasterFingerprint command and shows the result.
+
+    cargo build --target wasm32-unknown-unknown
+    cp target/wasm32-unknown-unknown/debug/wasm_bitcoin.wasm .
+    python3 -m http.server   # open http://localhost:8000/
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Bitcoin V-App in WASM — fingerprint demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 32px auto; }
+  #fp { font-size: 2rem; font-family: ui-monospace, monospace; margin: 16px 0; }
+  #log { white-space: pre-wrap; color: #555; margin-top: 8px; }
+  button { font: inherit; padding: 6px 14px; }
+</style>
+</head>
+<body>
+<h1>Bitcoin V-App running in WebAssembly</h1>
+<p>The real Bitcoin app's <code>process_message</code> handler runs entirely in your
+   browser. A co-resident Rust client (client-sdk in wasm) sends it a
+   <code>GetMasterFingerprint</code> request over the real CBOR protocol via
+   <code>WasmAppTransport</code> — no server, no device.</p>
+<p><button id="run" disabled>Get master fingerprint</button></p>
+<div id="fp">—</div>
+<div id="log">loading wasm…</div>
+
+<script type="module">
+const dec = new TextDecoder();
+const log = (s) => { document.getElementById("log").textContent = s; };
+
+let mem;
+const env = {
+  host_print: (ptr, len) => console.log("[vapp]", dec.decode(new Uint8Array(mem.buffer, ptr, len))),
+  host_random: (ptr, len) => crypto.getRandomValues(new Uint8Array(mem.buffer, ptr, len)),
+  host_exit: (code) => { throw new Error("vapp exited: " + code); },
+  host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(new Uint8Array(mem.buffer, ptr, len))); },
+};
+
+const { instance } = await WebAssembly.instantiateStreaming(fetch("wasm_bitcoin.wasm"), { env });
+const ex = instance.exports;
+mem = ex.memory;
+
+ex.bitcoin_init();
+const run = document.getElementById("run");
+run.disabled = false;
+log("ready — click to run GetMasterFingerprint in the Bitcoin V-App.");
+
+run.addEventListener("click", () => {
+  const fp = ex.bitcoin_get_fingerprint() >>> 0;
+  const hex = "0x" + fp.toString(16).padStart(8, "0");
+  document.getElementById("fp").textContent = hex;
+  log(fp === 0
+    ? "error: the app returned a zero / error response"
+    : "computed by the real Bitcoin V-App, in wasm.");
+});
+</script>
+</body>
+</html>
