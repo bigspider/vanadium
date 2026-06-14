@@ -3,7 +3,7 @@
 // future step driver: a handler that awaits get_event runs in wasm, suspending back to JS
 // between inputs.
 import { readFileSync, writeFileSync } from "node:fs";
-import { webcrypto as crypto } from "node:crypto";
+import { webcrypto as crypto, createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
 
 const wasmPath = "./target/wasm32-unknown-unknown/debug/wasm_echo.wasm";
@@ -51,10 +51,24 @@ ex.app_push_quit();
 r = ex.app_poll();
 if (r === -1n || r === -1) { console.log("FAIL: expected a response after quit"); process.exit(1); }
 const resp = dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), Number(r)));
-const ok = resp === `count=${taps}`;
-console.log(`final response: ${JSON.stringify(resp)}  ${ok ? "OK" : `MISMATCH (want count=${taps})`}`);
-if (!ok) process.exit(1);
-console.log("\nPASS: interactive V-App handler ran in wasm, suspended for input, and finished.");
+console.log("final response:", resp);
+
+const m = resp.match(/^count=(\d+) fingerprint=([0-9a-f]+) sha256=([0-9a-f]+)$/);
+if (!m) { console.log("FAIL: unexpected response format"); process.exit(1); }
+const expectSha = createHash("sha256").update("vanadium-wasm").digest("hex");
+const checks = [
+  ["count", m[1], String(taps)],
+  ["fingerprint (bip32+k256+hash160)", m[2], "f5acc2fd"],
+  ["sha256", m[3], expectSha],
+];
+let allOk = true;
+for (const [name, got, want] of checks) {
+  const ok = got === want;
+  console.log(`  ${name}: ${got}  ${ok ? "OK" : "MISMATCH (want " + want + ")"}`);
+  allOk = allOk && ok;
+}
+if (!allOk) process.exit(1);
+console.log("\nPASS: interactive V-App ran in wasm; crypto (bip32 + k256 + sha2) computed correctly.");
 
 // Minimal grayscale PNG encoder (intensity 0..15 -> 0..255).
 function encodePng(w, h, px) {

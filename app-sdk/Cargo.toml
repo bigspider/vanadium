@@ -72,6 +72,16 @@ target_vanadium_ledger = [
 target_wasm = [
     "common/target_wasm",
     "embedded-graphics",
+    # Pure-Rust crypto, shared with the native backend (no `rand`: randomness comes from
+    # the JS host).
+    "dep:bip32",
+    "dep:hmac",
+    "dep:k256",
+    "dep:num-bigint",
+    "dep:num-traits",
+    "dep:ripemd",
+    "dep:sha2",
+    "dep:sha3",
 ]
 
 # Enable this in V-App's dev-dependencies

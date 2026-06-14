@@ -129,9 +129,10 @@ pub fn get_device_property(property: u32) -> u32 {
     }
 }
 
-pub unsafe fn get_random_bytes(buffer: *mut u8, size: usize) -> u32 {
-    unsafe { host_random(buffer, size) };
-    1
+/// Randomness for the shared crypto module: the JS host's CSPRNG
+/// (`crypto.getRandomValues`). `get_random_bytes` itself is shared (see `ecalls_crypto`).
+pub(crate) fn fill_random(buf: &mut [u8]) {
+    unsafe { host_random(buf.as_mut_ptr(), buf.len()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -454,127 +455,12 @@ pub unsafe fn show_step(_step_desc: *const u8, _step_desc_len: usize) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Crypto / bignum / hash — stubs for now. These are pure-Rust on native (k256,
-// bip32, sha2, …) and will be shared with this backend in a later step.
+// Crypto / bignum / hash ECALLs — pure-Rust software implementations shared with
+// the native backend (see `ecalls_crypto`). Randomness comes from `fill_random`.
 // ---------------------------------------------------------------------------
-pub fn get_master_fingerprint(_curve: u32) -> u32 {
-    todo!("get_master_fingerprint on wasm")
-}
-
-pub unsafe fn bn_modm(_r: *mut u8, _n: *const u8, _len: usize, _m: *const u8, _len_m: usize) -> u32 {
-    todo!("bn_modm on wasm")
-}
-
-pub unsafe fn bn_addm(_r: *mut u8, _a: *const u8, _b: *const u8, _m: *const u8, _len: usize) -> u32 {
-    todo!("bn_addm on wasm")
-}
-
-pub unsafe fn bn_subm(_r: *mut u8, _a: *const u8, _b: *const u8, _m: *const u8, _len: usize) -> u32 {
-    todo!("bn_subm on wasm")
-}
-
-pub unsafe fn bn_multm(_r: *mut u8, _a: *const u8, _b: *const u8, _m: *const u8, _len: usize) -> u32 {
-    todo!("bn_multm on wasm")
-}
-
-pub unsafe fn bn_powm(
-    _r: *mut u8,
-    _a: *const u8,
-    _e: *const u8,
-    _len_e: usize,
-    _m: *const u8,
-    _len: usize,
-) -> u32 {
-    todo!("bn_powm on wasm")
-}
-
-pub unsafe fn bn_modinv_prime(_r: *mut u8, _a: *const u8, _p: *const u8, _len: usize) -> u32 {
-    todo!("bn_modinv_prime on wasm")
-}
-
-pub unsafe fn derive_hd_node(
-    _curve: u32,
-    _path: *const u32,
-    _path_len: usize,
-    _privkey: *mut u8,
-    _chain_code: *mut u8,
-) -> u32 {
-    todo!("derive_hd_node on wasm")
-}
-
-pub unsafe fn derive_slip21_node(_labels: *const u8, _labels_len: usize, _out: *mut u8) -> u32 {
-    todo!("derive_slip21_node on wasm")
-}
-
-pub unsafe fn ecfp_add_point(_curve: u32, _r: *mut u8, _p: *const u8, _q: *const u8) -> u32 {
-    todo!("ecfp_add_point on wasm")
-}
-
-pub unsafe fn ecfp_scalar_mult(
-    _curve: u32,
-    _r: *mut u8,
-    _p: *const u8,
-    _k: *const u8,
-    _k_len: usize,
-) -> u32 {
-    todo!("ecfp_scalar_mult on wasm")
-}
-
-pub unsafe fn ecdsa_sign(
-    _curve: u32,
-    _mode: u32,
-    _hash_id: u32,
-    _privkey: *const u8,
-    _msg_hash: *const u8,
-    _signature: *mut u8,
-) -> usize {
-    todo!("ecdsa_sign on wasm")
-}
-
-pub unsafe fn ecdsa_verify(
-    _curve: u32,
-    _pubkey: *const u8,
-    _msg_hash: *const u8,
-    _signature: *const u8,
-    _signature_len: usize,
-) -> u32 {
-    todo!("ecdsa_verify on wasm")
-}
-
-pub unsafe fn schnorr_sign(
-    _curve: u32,
-    _mode: u32,
-    _hash_id: u32,
-    _privkey: *const u8,
-    _msg: *const u8,
-    _msg_len: usize,
-    _signature: *mut u8,
-    _entropy: *const [u8; 32],
-) -> usize {
-    todo!("schnorr_sign on wasm")
-}
-
-pub unsafe fn schnorr_verify(
-    _curve: u32,
-    _mode: u32,
-    _hash_id: u32,
-    _pubkey: *const u8,
-    _msg: *const u8,
-    _msg_len: usize,
-    _signature: *const u8,
-    _signature_len: usize,
-) -> u32 {
-    todo!("schnorr_verify on wasm")
-}
-
-pub unsafe fn hash_init(_hash_id: u32, _ctx: *mut u8) {
-    todo!("hash_init on wasm")
-}
-
-pub unsafe fn hash_update(_hash_id: u32, _ctx: *mut u8, _data: *const u8, _len: usize) -> u32 {
-    todo!("hash_update on wasm")
-}
-
-pub unsafe fn hash_final(_hash_id: u32, _ctx: *mut u8, _digest: *mut u8) -> u32 {
-    todo!("hash_final on wasm")
-}
+pub use crate::ecalls_crypto::{
+    bn_addm, bn_modinv_prime, bn_modm, bn_multm, bn_powm, bn_subm, derive_hd_node,
+    derive_slip21_node, ecdsa_sign, ecdsa_verify, ecfp_add_point, ecfp_scalar_mult,
+    get_master_fingerprint, get_random_bytes, hash_final, hash_init, hash_update,
+    schnorr_sign, schnorr_verify,
+};

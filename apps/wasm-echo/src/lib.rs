@@ -42,7 +42,20 @@ async fn process(_app: &mut App, _msg: &[u8]) -> Vec<u8> {
             _ => {}
         }
     }
-    alloc::format!("count={count}").into_bytes()
+    // Crypto self-check on wasm: the master fingerprint (bip32 + k256 + hash160) and a
+    // SHA-256 digest, both via the SDK's crypto ECALLs (the shared pure-Rust impls).
+    use sdk::curve::{Curve, Secp256k1};
+    use sdk::hash::Hasher;
+    let fp = Secp256k1::get_master_fingerprint();
+    let mut hasher = sdk::hash::Sha256::new();
+    hasher.update(b"vanadium-wasm");
+    let mut digest = [0u8; 32];
+    hasher.digest(&mut digest);
+    let mut hex = alloc::string::String::new();
+    for b in digest {
+        hex.push_str(&alloc::format!("{b:02x}"));
+    }
+    alloc::format!("count={count} fingerprint={fp:08x} sha256={hex}").into_bytes()
 }
 
 /// Draws the counter screen with the SDK's drawing primitives (the same path on device).

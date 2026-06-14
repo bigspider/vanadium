@@ -59,6 +59,10 @@ mod ecalls_native;
 #[cfg(feature = "target_wasm")]
 mod ecalls_wasm;
 
+// Pure-Rust crypto/bignum/hash ECALL implementations, shared by the two software backends.
+#[cfg(any(feature = "target_native", feature = "target_wasm"))]
+mod ecalls_crypto;
+
 #[cfg(feature = "target_wasm")]
 pub mod wasm_runtime;
 
