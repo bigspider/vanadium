@@ -7,8 +7,12 @@
   Cancel) to drive it — your clicks are fed to the app as touch events.
 
     cargo build --target wasm32-unknown-unknown
-    cp target/wasm32-unknown-unknown/debug/wasm_bitcoin.wasm .
-    python3 -m http.server   # open http://localhost:8000/
+    python3 -m http.server   # then open http://localhost:8000/
+
+  Must be served over http:// — opening this file as a file:// URL makes the browser block
+  the fetch of the .wasm (the Same-Origin Policy forbids a file:// page from reading local
+  files). Run the server from this crate directory; the page fetches the build output under
+  target/ directly (no copy needed).
 -->
 <html lang="en">
 <head>
@@ -54,7 +58,12 @@ const env = {
   host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(new Uint8Array(mem.buffer, ptr, len))); },
 };
 
-const { instance } = await WebAssembly.instantiateStreaming(fetch("wasm_bitcoin.wasm"), { env });
+// Load via arrayBuffer (not instantiateStreaming) so it works regardless of whether the
+// static server sends `Content-Type: application/wasm`.
+const wasmUrl = "target/wasm32-unknown-unknown/debug/wasm_bitcoin.wasm";
+const resp = await fetch(wasmUrl);
+if (!resp.ok) { log(`failed to fetch ${wasmUrl} (${resp.status}) — serve this over http:// from the crate dir`); throw new Error("wasm fetch failed"); }
+const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(), { env });
 const ex = instance.exports;
 mem = ex.memory;
 ex.bitcoin_init();
