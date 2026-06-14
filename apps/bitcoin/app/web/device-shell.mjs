@@ -5,8 +5,8 @@
 // methods — lives entirely in the wasm-bindgen'd client; this shell never knows about it.
 
 export class DeviceShell {
-  // `api` exposes the SDK device shell: { memory, vappFbPtr, vappFbWidth, vappFbHeight,
-  // vappFbVersion, vappTick, vappPushTouch, vappIdleTouch }.
+  // `api` exposes the SDK device shell: { vappFramebuffer, vappFbWidth, vappFbHeight,
+  // vappTick, vappPushTouch, vappIdleTouch }.
   constructor(api, canvas) {
     this.api = api;
     this.canvas = canvas;
@@ -51,11 +51,10 @@ export class DeviceShell {
   }
 
   _paint() {
-    const { memory, vappFbPtr, vappFbWidth, vappFbHeight } = this.api;
+    const { vappFramebuffer, vappFbWidth, vappFbHeight } = this.api;
     const w = vappFbWidth(), h = vappFbHeight();
     if (this.canvas.width !== w) { this.canvas.width = w; this.canvas.height = h; }
-    // Refetch the buffer each time: allocations can grow the memory and detach the old one.
-    const fb = new Uint8Array(memory.buffer, vappFbPtr(), w * h);
+    const fb = vappFramebuffer(); // Gray4 bytes (0..15), a fresh copy
     const img = this.ctx.createImageData(w, h);
     for (let i = 0; i < fb.length; i++) {
       const v = Math.round((fb[i] * 255) / 15); // Gray4 (0..15) -> 0..255

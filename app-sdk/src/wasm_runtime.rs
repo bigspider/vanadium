@@ -144,7 +144,18 @@ fn idle_step() {
 // V-App gets these for free; only the command bindings are app-specific.
 // ===========================================================================
 
-/// Pointer to the Gray4 framebuffer (one byte per pixel, 0..=15) in wasm memory.
+/// The Gray4 framebuffer (one byte per pixel, intensity 0..=15) as a fresh byte copy. Simpler
+/// and more robust for the page than reading wasm memory by pointer (no detached-buffer
+/// hazard when the module grows its memory).
+#[wasm_bindgen(js_name = vappFramebuffer)]
+pub fn js_framebuffer() -> Vec<u8> {
+    let (w, h) = (framebuffer_width(), framebuffer_height());
+    // SAFETY: the framebuffer is `w*h` bytes at this pointer, valid for the module's life;
+    // single-threaded, so nothing mutates it during this synchronous copy.
+    unsafe { core::slice::from_raw_parts(framebuffer_ptr(), w * h) }.to_vec()
+}
+
+/// Pointer to the Gray4 framebuffer in wasm memory (for pages that prefer a zero-copy read).
 #[wasm_bindgen(js_name = vappFbPtr)]
 pub fn js_fb_ptr() -> usize {
     framebuffer_ptr() as usize

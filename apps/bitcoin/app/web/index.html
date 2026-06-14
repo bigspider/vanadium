@@ -43,7 +43,7 @@
 
 <script type="module">
 import init, {
-  BitcoinApp, vappFbPtr, vappFbWidth, vappFbHeight, vappFbVersion,
+  BitcoinApp, vappFramebuffer, vappFbWidth, vappFbHeight,
   vappTick, vappPushTouch, vappIdleTouch,
 } from "./pkg/vnd_bitcoin.js";
 import { DeviceShell } from "./device-shell.mjs";
@@ -51,11 +51,8 @@ import { DeviceShell } from "./device-shell.mjs";
 const log = (s) => { document.getElementById("log").textContent = s; };
 const out = (s) => { document.getElementById("out").textContent = s; };
 
-const wasm = await init();
-const api = {
-  memory: wasm.memory,
-  vappFbPtr, vappFbWidth, vappFbHeight, vappFbVersion, vappTick, vappPushTouch, vappIdleTouch,
-};
+await init();
+const api = { vappFramebuffer, vappFbWidth, vappFbHeight, vappTick, vappPushTouch, vappIdleTouch };
 
 const shell = new DeviceShell(api, document.getElementById("screen"));
 shell.onstop = (e) => log("App stopped: " + (e && e.message ? e.message : String(e)) + " — reload to restart.");
