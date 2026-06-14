@@ -59,7 +59,7 @@ const u8 = (ptr, len) => new Uint8Array(ex.memory.buffer, ptr, len);
 const env = {
   host_print: (ptr, len) => console.log("[vapp]", dec.decode(u8(ptr, len))),
   host_random: (ptr, len) => crypto.getRandomValues(u8(ptr, len)),
-  host_exit: (code) => { throw new Error("vapp exited: " + code); },
+  host_exit: (code) => { const e = new Error("app exited, status " + code); e.appExit = true; e.code = code; throw e; },
   host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(u8(ptr, len))); },
 };
 
@@ -102,6 +102,19 @@ function showResult(s) {
 let cmdMode = false;
 let stopped = false;
 let lastTick = -Infinity;
+
+// The app called exit() (e.g. you tapped Quit) or trapped: halt the loop and say so, since
+// there is no OS dashboard to fall back to in the page.
+function stop(err) {
+  if (stopped) return;
+  stopped = true;
+  canvas.style.opacity = 0.35;
+  for (const id of ["fp", "xpub"]) document.getElementById(id).disabled = true;
+  out("");
+  if (err && err.appExit) log(`The app exited (status ${err.code}). Reload the page to start it again.`);
+  else log("The app stopped: " + ((err && err.message) || err));
+}
+
 function frame(t) {
   if (stopped) return;
   try {
@@ -115,19 +128,18 @@ function frame(t) {
     }
     paint();
   } catch (e) {
-    stopped = true;
-    log("app stopped: " + e.message);
+    stop(e);
     return;
   }
   requestAnimationFrame(frame);
 }
 
 function run(startFn, what) {
-  if (cmdMode) return;
+  if (cmdMode || stopped) return;
   cmdMode = true;
   out("…");
   log("running " + what + " …");
-  startFn();
+  try { startFn(); } catch (e) { stop(e); }
 }
 
 document.getElementById("fp").addEventListener("click",
@@ -138,11 +150,16 @@ document.getElementById("xpub").addEventListener("click",
 // Forward canvas clicks at device coordinates: to the running command's screen while a command
 // is in flight, otherwise to the idle dashboard (its app-info / quit navigation).
 canvas.addEventListener("pointerdown", (e) => {
+  if (stopped) return;
   const rect = canvas.getBoundingClientRect();
   const x = Math.floor((e.clientX - rect.left) * canvas.width / rect.width);
   const y = Math.floor((e.clientY - rect.top) * canvas.height / rect.height);
-  if (cmdMode) { ex.bitcoin_push_touch(x, y, 1); ex.bitcoin_push_touch(x, y, 0); }
-  else { ex.bitcoin_idle_touch(x, y); paint(); }
+  try {
+    if (cmdMode) { ex.bitcoin_push_touch(x, y, 1); ex.bitcoin_push_touch(x, y, 0); }
+    else { ex.bitcoin_idle_touch(x, y); paint(); }
+  } catch (err) {
+    stop(err); // e.g. tapping the dashboard's Quit calls the app's exit()
+  }
 });
 
 log("ready — tap a command, or interact with the dashboard.");
