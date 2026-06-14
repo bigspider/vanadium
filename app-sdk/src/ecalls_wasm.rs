@@ -432,14 +432,36 @@ pub unsafe fn display_font_metrics(font: u32) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// Storage — stub (IndexedDB/localStorage later).
+// Storage — fixed-size slots kept in wasm memory, persisting for the page session
+// (the device/native keep them in flash/a file). MAX_STORAGE_SLOTS slots of
+// STORAGE_SLOT_SIZE bytes each; unset slots read back as zeros. Persisting across
+// reloads (IndexedDB/localStorage via the host) can be layered on later.
 // ---------------------------------------------------------------------------
-pub unsafe fn storage_read(_slot_index: u32, _buffer: *mut u8, _buffer_size: usize) -> u32 {
-    0
+const SLOT: usize = common::constants::STORAGE_SLOT_SIZE;
+const SLOTS: usize = common::constants::MAX_STORAGE_SLOTS as usize;
+
+static STORAGE: Mutex<[[u8; SLOT]; SLOTS]> = Mutex::new([[0u8; SLOT]; SLOTS]);
+
+pub unsafe fn storage_read(slot_index: u32, buffer: *mut u8, buffer_size: usize) -> u32 {
+    if buffer_size != SLOT || slot_index as usize >= SLOTS {
+        return 0;
+    }
+    let store = STORAGE.lock().expect("STORAGE poisoned");
+    // SAFETY: caller guarantees [buffer, buffer+SLOT) is valid and writable.
+    unsafe { std::ptr::copy_nonoverlapping(store[slot_index as usize].as_ptr(), buffer, SLOT) };
+    1
 }
 
-pub unsafe fn storage_write(_slot_index: u32, _buffer: *const u8, _buffer_size: usize) -> u32 {
-    0
+pub unsafe fn storage_write(slot_index: u32, buffer: *const u8, buffer_size: usize) -> u32 {
+    if buffer_size != SLOT || slot_index as usize >= SLOTS {
+        return 0;
+    }
+    let mut store = STORAGE.lock().expect("STORAGE poisoned");
+    // SAFETY: caller guarantees [buffer, buffer+SLOT) is valid and readable.
+    unsafe {
+        std::ptr::copy_nonoverlapping(buffer, store[slot_index as usize].as_mut_ptr(), SLOT)
+    };
+    1
 }
 
 // ---------------------------------------------------------------------------

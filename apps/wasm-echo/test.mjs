@@ -79,12 +79,17 @@ function clientSend(str) {
   const n = ex.client_send(buf.length);
   return dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), Number(n)));
 }
-const creply = clientSend("ping");
-const cok = creply === "pong:ping";
-console.log(`\nclient (WasmAppTransport) -> co-resident app:`);
-console.log(`  client_send("ping") -> ${JSON.stringify(creply)}  ${cok ? "OK" : "MISMATCH (want pong:ping)"}`);
-if (!cok) process.exit(1);
-console.log("\nPASS: client-sdk's VAppTransport ran in wasm and exchanged messages with a co-resident V-App.");
+console.log(`\nclient (WasmAppTransport) -> co-resident app (persistent storage counter):`);
+let allClientOk = true;
+for (let i = 1; i <= 3; i++) {
+  const reply = clientSend("ping");
+  const want = `pong#${i}:ping`;
+  const ok = reply === want;
+  console.log(`  client_send("ping") -> ${JSON.stringify(reply)}  ${ok ? "OK" : "MISMATCH (want " + want + ")"}`);
+  allClientOk = allClientOk && ok;
+}
+if (!allClientOk) process.exit(1);
+console.log("\nPASS: client-sdk's VAppTransport ran in wasm, exchanged messages with a co-resident V-App, and storage persisted across calls.");
 
 // Minimal grayscale PNG encoder (intensity 0..15 -> 0..255).
 function encodePng(w, h, px) {

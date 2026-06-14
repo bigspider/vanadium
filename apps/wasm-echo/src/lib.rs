@@ -163,10 +163,17 @@ pub extern "C" fn fb_version() -> u64 {
 // ---------------------------------------------------------------------------
 use client::{VAppTransport, WasmAppTransport};
 
-/// A trivial request/response V-App for the client demo.
+/// A request/response V-App for the client demo. It also keeps a request counter in
+/// persistent storage (slot 0), so each reply shows storage round-tripping across calls.
 #[sdk::handler]
 async fn echo_app(_app: &mut App, msg: &[u8]) -> Vec<u8> {
-    let mut out = b"pong:".to_vec();
+    use sdk::storage::{read_slot, write_slot};
+    let mut slot = read_slot(0).unwrap_or([0u8; 32]);
+    let mut n = u32::from_le_bytes([slot[0], slot[1], slot[2], slot[3]]);
+    n += 1;
+    slot[0..4].copy_from_slice(&n.to_le_bytes());
+    let _ = write_slot(0, &slot);
+    let mut out = alloc::format!("pong#{n}:").into_bytes();
     out.extend_from_slice(msg);
     out
 }
