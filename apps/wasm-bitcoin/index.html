@@ -19,8 +19,10 @@
 <meta charset="utf-8" />
 <title>Bitcoin V-App in WASM — interactive demo</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 32px auto; }
-  #screen { border: 1px solid #ccc; image-rendering: pixelated; cursor: pointer; height: 480px; }
+  body { font-family: system-ui, sans-serif; max-width: 920px; margin: 32px auto; }
+  /* Native device resolution (480x600): displayed 1:1 so text stays crisp (no downscaling).
+     `pixelated` keeps it sharp if the browser upscales for a HiDPI display. */
+  #screen { border: 1px solid #ccc; width: 480px; height: 600px; flex: none; image-rendering: pixelated; cursor: pointer; }
   #out { font-family: ui-monospace, monospace; word-break: break-all; margin: 12px 0; min-height: 2.5em; }
   #log { color: #777; }
   button { font: inherit; padding: 6px 14px; margin-right: 8px; }
@@ -50,12 +52,15 @@ const dec = new TextDecoder();
 const log = (s) => { document.getElementById("log").textContent = s; };
 const out = (s) => { document.getElementById("out").textContent = s; };
 
-let mem;
+// Read a view on the *current* wasm memory. Refetch the buffer each time: the app allocates,
+// which can grow the memory and detach a previously held ArrayBuffer.
+const u8 = (ptr, len) => new Uint8Array(ex.memory.buffer, ptr, len);
+
 const env = {
-  host_print: (ptr, len) => console.log("[vapp]", dec.decode(new Uint8Array(mem.buffer, ptr, len))),
-  host_random: (ptr, len) => crypto.getRandomValues(new Uint8Array(mem.buffer, ptr, len)),
+  host_print: (ptr, len) => console.log("[vapp]", dec.decode(u8(ptr, len))),
+  host_random: (ptr, len) => crypto.getRandomValues(u8(ptr, len)),
   host_exit: (code) => { throw new Error("vapp exited: " + code); },
-  host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(new Uint8Array(mem.buffer, ptr, len))); },
+  host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(u8(ptr, len))); },
 };
 
 // Load via arrayBuffer (not instantiateStreaming) so it works regardless of whether the
@@ -65,7 +70,6 @@ const resp = await fetch(wasmUrl);
 if (!resp.ok) { log(`failed to fetch ${wasmUrl} (${resp.status}) — serve this over http:// from the crate dir`); throw new Error("wasm fetch failed"); }
 const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(), { env });
 const ex = instance.exports;
-mem = ex.memory;
 ex.bitcoin_init();
 
 const canvas = document.getElementById("screen");
@@ -73,7 +77,7 @@ const ctx = canvas.getContext("2d");
 function paint() {
   const w = ex.fb_width(), h = ex.fb_height();
   if (canvas.width !== w) { canvas.width = w; canvas.height = h; }
-  const fb = new Uint8Array(mem.buffer, ex.fb_ptr(), w * h);
+  const fb = u8(ex.fb_ptr(), w * h);
   const img = ctx.createImageData(w, h);
   for (let i = 0; i < fb.length; i++) {
     const v = Math.round((fb[i] * 255) / 15);
@@ -82,7 +86,7 @@ function paint() {
   ctx.putImageData(img, 0, 0);
 }
 
-const readResult = (n) => dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), Number(n)));
+const readResult = (n) => dec.decode(u8(ex.io_ptr(), Number(n)));
 function showResult(s) {
   if (s.startsWith("fingerprint:")) out("master fingerprint: 0x" + s.slice(12));
   else if (s.startsWith("xpub:")) out(s.slice(5));
@@ -90,26 +94,40 @@ function showResult(s) {
   else out(s);
 }
 
-let driving = false;
-function pump() {
-  const r = ex.bitcoin_poll(); // BigInt: -1 while awaiting on-device input, else result length
-  paint();
-  if (r !== -1n) {
-    driving = false;
-    showResult(readResult(r));
-    log("done. — click a command to run another.");
+// A single render/drive loop, like the device's run_loop. While a command is in flight it
+// advances the command (and the page feeds taps to the on-device screen); while idle it pumps
+// the device clock ~10x/s, so the app shows its dashboard and runs its timers (e.g. returning
+// to the dashboard a few seconds after a result screen) — exactly the behaviour between
+// messages on the real device.
+let cmdMode = false;
+let stopped = false;
+let lastTick = -Infinity;
+function frame(t) {
+  if (stopped) return;
+  try {
+    if (cmdMode) {
+      const r = ex.bitcoin_poll(); // -1 while awaiting on-device input, else result length
+      if (r !== -1n) { cmdMode = false; showResult(readResult(r)); log("done — tap a command, or the dashboard."); }
+      else log("the app is waiting on its screen — tap Next / Confirm / Cancel.");
+    } else if (t - lastTick > 100) {
+      ex.bitcoin_tick(); // device clock tick: draws the dashboard and advances its timers
+      lastTick = t;
+    }
+    paint();
+  } catch (e) {
+    stopped = true;
+    log("app stopped: " + e.message);
     return;
   }
-  log("the app is waiting on its screen — click Next / Confirm / Cancel to drive it.");
-  requestAnimationFrame(pump);
+  requestAnimationFrame(frame);
 }
+
 function run(startFn, what) {
-  if (driving) return;
-  driving = true;
+  if (cmdMode) return;
+  cmdMode = true;
   out("…");
   log("running " + what + " …");
   startFn();
-  requestAnimationFrame(pump);
 }
 
 document.getElementById("fp").addEventListener("click",
@@ -117,18 +135,18 @@ document.getElementById("fp").addEventListener("click",
 document.getElementById("xpub").addEventListener("click",
   () => run(() => ex.bitcoin_start_get_pubkey(1), "GetExtendedPubkey (with confirm)"));
 
-// Forward canvas clicks to the app as a touch (press + release) at device coordinates.
+// Forward canvas clicks at device coordinates: to the running command's screen while a command
+// is in flight, otherwise to the idle dashboard (its app-info / quit navigation).
 canvas.addEventListener("pointerdown", (e) => {
-  if (!driving) return;
   const rect = canvas.getBoundingClientRect();
   const x = Math.floor((e.clientX - rect.left) * canvas.width / rect.width);
   const y = Math.floor((e.clientY - rect.top) * canvas.height / rect.height);
-  ex.bitcoin_push_touch(x, y, 1);
-  ex.bitcoin_push_touch(x, y, 0);
+  if (cmdMode) { ex.bitcoin_push_touch(x, y, 1); ex.bitcoin_push_touch(x, y, 0); }
+  else { ex.bitcoin_idle_touch(x, y); paint(); }
 });
 
-paint();
-log("ready — click a command.");
+log("ready — tap a command, or interact with the dashboard.");
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>

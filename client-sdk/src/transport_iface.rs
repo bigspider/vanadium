@@ -71,7 +71,10 @@ pub trait VAppTransport {
 /// step-driver instead of blocking.
 #[cfg(feature = "wasm")]
 pub struct WasmAppTransport<S = ()> {
-    app: app_sdk::App<S>,
+    // Boxed so the app keeps a stable address: the demo grabs `app_ptr()` to pump the app's
+    // idle/dashboard UX (architecture A) while no command is in flight, and that pointer must
+    // survive moving the transport into a `Box<dyn VAppTransport>`.
+    app: Box<app_sdk::App<S>>,
 }
 
 #[cfg(feature = "wasm")]
@@ -79,8 +82,16 @@ impl<S: Default> WasmAppTransport<S> {
     /// Builds the transport from an `AppBuilder` (the co-resident V-App).
     pub fn new(builder: app_sdk::AppBuilder<S>) -> Self {
         Self {
-            app: builder.build_wasm(),
+            app: Box::new(builder.build_wasm()),
         }
+    }
+
+    /// A stable pointer to the co-resident app, so the runtime can pump its idle/dashboard UX
+    /// (`App::idle_ux_step`) between commands. Sound only single-threaded and never while a
+    /// command is in flight (the transport's `send_message` is then borrowing the same app);
+    /// the caller upholds that, exactly like the step drivers do.
+    pub fn app_ptr(&mut self) -> *mut app_sdk::App<S> {
+        &mut *self.app
     }
 }
 

@@ -557,6 +557,17 @@ where
         handler(self, cmd).await
     }
 
+    /// Drives one step of the idle dashboard UX for the cooperative wasm runtime (architecture
+    /// A) — the part of `run_loop` that runs *between* messages. It draws the dashboard when
+    /// the app is idle and consumes exactly one queued event: a `Ticker` advances the
+    /// post-`show_info` return-to-dashboard countdown, a touch drives dashboard navigation
+    /// (app-info / quit). Call only while no command is in flight, and with an event already
+    /// queued (otherwise it awaits one). JS pumps a `Ticker` on a timer plus taps on input.
+    #[cfg(feature = "target_wasm")]
+    pub async fn idle_ux_step(&mut self) {
+        self.process_ux_events(true).await;
+    }
+
     /// This is only useful to produce a valid app instance in tests.
     pub fn singleton() -> Self {
         AppBuilder::new("test_app", "0.0.1", |_app, _msg| {

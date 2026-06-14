@@ -10,17 +10,28 @@ const bytes = readFileSync(
 const module = new WebAssembly.Module(bytes);
 
 const dec = new TextDecoder();
-let mem;
+// Read a view on the *current* wasm memory. The buffer must be fetched fresh on every access:
+// the app allocates, which can grow the memory and detach any previously held ArrayBuffer.
+const u8 = (ptr, len) => new Uint8Array(ex.memory.buffer, ptr, len);
 const env = {
-  host_print: (ptr, len) => console.log("[vapp]", dec.decode(new Uint8Array(mem.buffer, ptr, len))),
-  host_random: (ptr, len) => crypto.getRandomValues(new Uint8Array(mem.buffer, ptr, len)),
+  host_print: (ptr, len) => console.log("[vapp]", dec.decode(u8(ptr, len))),
+  host_random: (ptr, len) => crypto.getRandomValues(u8(ptr, len)),
   host_exit: (code) => { throw new Error("vapp exited: " + code); },
-  host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(new Uint8Array(mem.buffer, ptr, len))); },
+  host_fatal: (ptr, len) => { throw new Error("vapp fatal: " + dec.decode(u8(ptr, len))); },
 };
 const ex = new WebAssembly.Instance(module, { env }).exports;
-mem = ex.memory;
 
-const readResult = (n) => dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), Number(n)));
+const readResult = (n) => dec.decode(u8(ex.io_ptr(), Number(n)));
+
+// A cheap weighted checksum of the framebuffer, to tell screens apart (dashboard vs a result
+// screen) without decoding pixels.
+function fbHash() {
+  const w = ex.fb_width(), h = ex.fb_height();
+  const fb = u8(ex.fb_ptr(), w * h);
+  let s = 0;
+  for (let i = 0; i < fb.length; i++) s = (s + fb[i] * ((i % 251) + 1)) >>> 0;
+  return s;
+}
 
 // Drive the in-flight command to completion. `onPending(n)` is called on each suspend (the
 // app is awaiting on-device input); use it to feed events.
@@ -39,6 +50,13 @@ let failed = false;
 const check = (cond, msg) => { console.log(`${cond ? "  OK  " : " FAIL "} ${msg}`); if (!cond) failed = true; };
 
 ex.bitcoin_init();
+
+// 0) Dashboard at startup: the first idle tick draws the app's home screen (the device shows
+//    its dashboard when idle — the demo pumps that between commands).
+const blankHash = fbHash();
+ex.bitcoin_tick();
+const dashHash = fbHash();
+check(dashHash !== blankHash, "an idle tick draws the dashboard at startup");
 
 // 1) Request/response: the real BitcoinClient.get_master_fingerprint over the real protocol.
 ex.bitcoin_start_get_fingerprint();
@@ -75,6 +93,16 @@ let res4 = driveToCompletion(() => tap(76, 28));
 console.log(`get_extended_pubkey(display=true, reject) -> ${res4.result}  (suspends=${res4.pendings})`);
 check(res4.result.startsWith("error:") && /reject/i.test(res4.result),
   "rejecting on-device yields a typed UserRejected error");
+
+// 5) Dashboard lifecycle: after an approved GetExtendedPubkey the app shows a timed
+//    "...verified" info screen, then idle ticks return it to the dashboard (~30 ticks ≈ 3s on
+//    the device). This is the run_loop behaviour the demo reproduces with the idle pump.
+ex.bitcoin_start_get_pubkey(1);
+driveToCompletion(() => tap(399, 568)); // approve
+const verifiedHash = fbHash();
+check(verifiedHash !== dashHash, "after approve the screen shows the verified info, not the dashboard");
+for (let i = 0; i < 40; i++) ex.bitcoin_tick(); // pump the device clock past the ~3s timer
+check(fbHash() === dashHash, "idle ticks return the app to its dashboard after the timed info screen");
 
 console.log(failed
   ? "\nFAIL"

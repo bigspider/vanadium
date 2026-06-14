@@ -127,3 +127,11 @@ pub fn push_quit() {
     ed.action = Action::Quit;
     crate::ecalls_wasm::push_event(EventCode::Action, ed);
 }
+
+/// Queues a `Ticker` event — the device clock. Pump this on a timer while the app is idle so
+/// `App::idle_ux_step` can run the dashboard's timers (e.g. the return-to-dashboard countdown
+/// a timed `show_info` schedules).
+pub fn push_ticker() {
+    use common::ux::{EventCode, EventData};
+    crate::ecalls_wasm::push_event(EventCode::Ticker, EventData::default());
+}

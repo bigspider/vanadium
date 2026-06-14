@@ -20,12 +20,14 @@
 
 extern crate alloc;
 
+use core::cell::Cell;
 use core::ptr::addr_of_mut;
 use core::task::Poll;
 use std::cell::RefCell;
 
+use sdk::executor::block_on;
 use sdk::wasm_runtime;
-use sdk::AppBuilder;
+use sdk::{App, AppBuilder};
 
 use client::message::KeyTree;
 use client::{BitcoinClient, WasmAppTransport, WasmClientDriver};
@@ -35,19 +37,72 @@ static mut IO: [u8; IO_CAP] = [0; IO_CAP];
 
 thread_local! {
     static DRIVER: RefCell<Option<WasmClientDriver<BitcoinClient>>> = const { RefCell::new(None) };
+    // Stable pointer to the co-resident app, for pumping its idle/dashboard UX between
+    // commands. The app is owned (boxed) inside the transport inside the client inside DRIVER.
+    static APP: Cell<*mut App> = const { Cell::new(core::ptr::null_mut()) };
 }
 
 #[no_mangle]
 pub extern "C" fn bitcoin_init() {
     // The co-resident Bitcoin V-App, wrapped as a client transport, wrapped in the real
     // BitcoinClient, driven cooperatively.
-    let transport = WasmAppTransport::new(AppBuilder::new(
+    let mut transport = WasmAppTransport::new(AppBuilder::new(
         "Bitcoin",
         env!("CARGO_PKG_VERSION"),
         vnd_bitcoin::process_message,
     ));
+    // Grab the app pointer before the transport moves into the client (the app is boxed, so
+    // the pointer stays valid); used to pump the dashboard between commands.
+    APP.with(|a| a.set(transport.app_ptr()));
     let btc_client = BitcoinClient::new(Box::new(transport));
     DRIVER.with(|d| *d.borrow_mut() = Some(WasmClientDriver::new(btc_client)));
+}
+
+/// Whether a client command is currently being driven (so the page pauses the idle pump).
+fn command_in_flight() -> bool {
+    DRIVER.with(|d| d.borrow().as_ref().map_or(true, |dr| dr.busy()))
+}
+
+#[no_mangle]
+pub extern "C" fn bitcoin_busy() -> u32 {
+    command_in_flight() as u32
+}
+
+// Drive one idle/dashboard UX step on the co-resident app. One queued event must be present
+// (the callers below queue one first), so the step completes without awaiting.
+fn drive_idle_one() {
+    // SAFETY: single-threaded wasm, and we only run while no command is in flight (callers
+    // check `command_in_flight`), so nothing else borrows the app. The app outlives this
+    // pointer (owned by DRIVER for the life of the module).
+    let p = APP.with(|a| a.get());
+    if !p.is_null() {
+        block_on(unsafe { &mut *p }.idle_ux_step());
+    }
+}
+
+/// Pump one tick of the device clock while idle: draws the dashboard and advances its timers
+/// (e.g. the return-to-dashboard countdown after a timed `show_info`). No-op while a command
+/// runs. The page calls this on a ~100 ms timer.
+#[no_mangle]
+pub extern "C" fn bitcoin_tick() {
+    if command_in_flight() {
+        return;
+    }
+    wasm_runtime::push_ticker();
+    drive_idle_one();
+}
+
+/// Feed a dashboard tap (press + release) while idle — drives the dashboard's app-info / quit
+/// navigation. No-op while a command runs (command screens take taps via `bitcoin_push_touch`).
+#[no_mangle]
+pub extern "C" fn bitcoin_idle_touch(x: u32, y: u32) {
+    if command_in_flight() {
+        return;
+    }
+    wasm_runtime::push_touch(x as u16, y as u16, true);
+    drive_idle_one(); // consume the press
+    wasm_runtime::push_touch(x as u16, y as u16, false);
+    drive_idle_one(); // consume the release (dashboard nav acts on release)
 }
 
 /// Begin `GetMasterFingerprint` (no UI; completes in one poll).
