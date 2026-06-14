@@ -10,7 +10,7 @@ pub use client::BitcoinClient;
 #[cfg(not(feature = "wasm"))]
 pub use sdk::vanadium_client::{client_utils::*, VAppTransport};
 #[cfg(feature = "wasm")]
-pub use sdk::{VAppTransport, WasmAppTransport, WasmClientDriver};
+pub use sdk::{GlobalDeviceTransport, VAppTransport, WasmAppTransport};
 
 // Re-exports from the `common` module that are useful for users of this library.
 pub use common::{

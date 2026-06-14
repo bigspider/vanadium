@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<!--
+  Browser demo: the real Bitcoin V-App AND the real Rust BitcoinClient, compiled to one wasm
+  module and exposed to JS via wasm-bindgen — no server, no device (architecture A). Each
+  command is a JS method on `BitcoinApp` (the real client); the generic device shell paints
+  the screen and feeds input. There is no separate demo crate: this is built straight from the
+  `vnd-bitcoin` app crate.
+
+    ./web/build.sh                 # builds web/pkg via wasm-bindgen
+    python3 -m http.server         # from apps/bitcoin/app, then open http://localhost:8000/web/
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Bitcoin V-App in WASM — real client via wasm-bindgen</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 920px; margin: 32px auto; }
+  /* Native device resolution (480x600), 1:1 so text stays crisp. */
+  #screen { border: 1px solid #ccc; width: 480px; height: 600px; flex: none; image-rendering: pixelated; cursor: pointer; }
+  #out { font-family: ui-monospace, monospace; word-break: break-all; margin: 12px 0; min-height: 2.5em; }
+  #log { color: #777; }
+  button { font: inherit; padding: 6px 14px; margin-right: 8px; }
+  .row { display: flex; gap: 24px; align-items: flex-start; }
+</style>
+</head>
+<body>
+<h1>Bitcoin V-App running in WebAssembly</h1>
+<p>The real Bitcoin app and the real <code>BitcoinClient</code> are compiled to one wasm module;
+   the client is callable from JS via wasm-bindgen — <code>await app.getExtendedPubkey(...)</code>.
+   For commands with on-device confirmation the app draws to the simulated screen and waits —
+   tap the rendered <b>Next</b> / <b>Confirm</b> / <b>Cancel</b> buttons.</p>
+<p>
+  <button id="fp">app.getMasterFingerprint()</button>
+  <button id="xpub">app.getExtendedPubkey() with confirm</button>
+</p>
+<div class="row">
+  <canvas id="screen"></canvas>
+  <div style="flex:1">
+    <div id="out">—</div>
+    <div id="log">loading wasm…</div>
+  </div>
+</div>
+
+<script type="module">
+import init, {
+  BitcoinApp, vappFbPtr, vappFbWidth, vappFbHeight, vappFbVersion,
+  vappTick, vappPushTouch, vappIdleTouch,
+} from "./pkg/vnd_bitcoin.js";
+import { DeviceShell } from "./device-shell.mjs";
+
+const log = (s) => { document.getElementById("log").textContent = s; };
+const out = (s) => { document.getElementById("out").textContent = s; };
+
+const wasm = await init();
+const api = {
+  memory: wasm.memory,
+  vappFbPtr, vappFbWidth, vappFbHeight, vappFbVersion, vappTick, vappPushTouch, vappIdleTouch,
+};
+
+const shell = new DeviceShell(api, document.getElementById("screen"));
+shell.onstop = (e) => log("App stopped: " + (e && e.message ? e.message : String(e)) + " — reload to restart.");
+shell.start();
+
+const app = new BitcoinApp(); // installs the V-App into the page's device
+log("ready — run a command, or interact with the dashboard.");
+
+document.getElementById("fp").addEventListener("click", async () => {
+  out("…"); log("running getMasterFingerprint …");
+  try {
+    const fp = await shell.run(app.getMasterFingerprint());
+    out("master fingerprint: 0x" + (fp >>> 0).toString(16));
+    log("done.");
+  } catch (e) { out("⚠ " + (e && e.message ? e.message : e)); log("done."); }
+});
+
+document.getElementById("xpub").addEventListener("click", async () => {
+  out("…"); log("running getExtendedPubkey — confirm on the device screen …");
+  try {
+    const xpub = await shell.run(app.getExtendedPubkey("m/84'/1'/0'", true));
+    out(xpub);
+    log("done.");
+  } catch (e) { out("⚠ " + (e && e.message ? e.message : e)); log("done."); }
+});
+</script>
+</body>
+</html>

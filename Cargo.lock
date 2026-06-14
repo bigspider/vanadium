@@ -4943,6 +4943,7 @@ dependencies = [
  "tao",
  "vanadium-ecalls",
  "vanadium_macros",
+ "wasm-bindgen",
  "wry",
  "zeroize",
 ]

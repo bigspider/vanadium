@@ -27,6 +27,10 @@ embedded-graphics = { version = "0.8.1", optional = true }
 wry = { version = "0.37", optional = true }
 tao = { version = "0.24", optional = true }
 
+# Web (wasm32) runtime: expose the generic device shell to JS. Version pinned to the
+# workspace's wasm-bindgen (must match the installed `wasm-bindgen-cli`).
+wasm-bindgen = { version = "=0.2.105", optional = true }
+
 # target_native dependencies (optional)
 bip32 = { version = "0.5.2", optional = true }
 hex = { version = "0.4.3", optional = true }
@@ -72,6 +76,7 @@ target_vanadium_ledger = [
 target_wasm = [
     "common/target_wasm",
     "embedded-graphics",
+    "dep:wasm-bindgen",
     # Pure-Rust crypto, shared with the native backend (no `rand`: randomness comes from
     # the JS host).
     "dep:bip32",

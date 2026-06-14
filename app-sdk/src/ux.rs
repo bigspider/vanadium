@@ -35,26 +35,20 @@ pub fn has_page_api() -> bool {
 /// Blocks until an event is received, then returns it. The blocking happens inside the
 /// `ecalls::get_event` call (it sleeps a ticker period); this just decodes the result.
 pub async fn get_event() -> Event {
-    let mut event_data = EventData::default();
-
-    // On wasm the input queue can be empty between user inputs; suspend (yield back to the
-    // JS step-driver, which renders the frame and collects input) until something is
-    // queued, instead of busy-returning. Other targets read a single event directly.
+    // On wasm the input queue can be empty between user inputs; suspend as a real future
+    // (parking the task's waker) until the page queues input, so an interactive command
+    // resolves as a JS Promise. Other targets read a single event directly from the ECALL.
     #[cfg(feature = "target_wasm")]
-    let raw = loop {
+    let (event_code, event_data) = crate::ecalls_wasm::next_event().await;
+
+    #[cfg(not(feature = "target_wasm"))]
+    let (event_code, event_data) = {
+        let mut event_data = EventData::default();
         // SAFETY: event_data is a properly aligned, initialized EventData on the stack.
         let raw = unsafe { ecalls::get_event(&mut event_data) };
-        if raw == crate::ecalls_wasm::NO_EVENT_CODE {
-            crate::executor::yield_now().await;
-            continue;
-        }
-        break raw;
+        (EventCode::from(raw), event_data)
     };
-    #[cfg(not(feature = "target_wasm"))]
-    // SAFETY: event_data is a properly aligned, initialized EventData on the stack.
-    let raw = unsafe { ecalls::get_event(&mut event_data) };
 
-    let event_code = EventCode::from(raw);
     match event_code {
         EventCode::Ticker => {
             // Give a chance to the executor to make progress on registered tasks

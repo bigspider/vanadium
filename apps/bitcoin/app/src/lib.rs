@@ -8,6 +8,10 @@ pub mod handlers;
 pub mod identity;
 pub mod resident_key;
 
+// Web entry (architecture A): the real BitcoinClient exposed to JS via wasm-bindgen.
+#[cfg(feature = "target_wasm")]
+pub mod wasm;
+
 use handlers::*;
 
 use alloc::vec::Vec;

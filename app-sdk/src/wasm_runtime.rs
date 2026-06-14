@@ -26,83 +26,10 @@ pub fn framebuffer_version() -> u64 {
     crate::ecalls_wasm::framebuffer_version()
 }
 
-// ---------------------------------------------------------------------------
-// Step driver — runs a V-App command that may await user input, one poll at a
-// time, so JS keeps the event loop (architecture A). `start` builds the handler
-// future; `poll` advances it; when the handler awaits `get_event` with no input
-// queued it suspends, `poll` returns `Pending`, and the page renders the frame
-// and feeds input (via `push_touch` / `push_button` / `push_quit`) before polling
-// again.
-// ---------------------------------------------------------------------------
-
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::app::{App, AppBuilder};
-
-/// Drives one V-App across JS poll calls. Holds the app and the in-flight command, plus
-/// the handler future that borrows them.
-pub struct WasmDriver<S = ()> {
-    // `app` and `cmd` live in stable heap allocations and outlive `fut`, which borrows
-    // them; we erase those borrows to `'static` and uphold soundness by construction (see
-    // the SAFETY note in `start`): single-threaded, and `app`/`cmd` are never touched or
-    // replaced while `fut` is `Some`.
-    app: Box<App<S>>,
-    cmd: Box<[u8]>,
-    fut: Option<Pin<Box<dyn Future<Output = Vec<u8>>>>>,
-}
-
-impl<S: Default + 'static> WasmDriver<S> {
-    /// Builds the driver from an `AppBuilder` (no command in flight yet).
-    pub fn new(builder: AppBuilder<S>) -> Self {
-        Self {
-            app: Box::new(builder.build_wasm()),
-            cmd: Box::new([]),
-            fut: None,
-        }
-    }
-
-    /// Whether a command is currently being handled.
-    pub fn busy(&self) -> bool {
-        self.fut.is_some()
-    }
-
-    /// Begins handling `cmd`. Panics if a command is already in flight.
-    pub fn start(&mut self, cmd: Vec<u8>) {
-        assert!(!self.busy(), "a command is already in flight");
-        self.cmd = cmd.into_boxed_slice();
-        let handler = self.app.handler;
-        let app_ptr: *mut App<S> = &mut *self.app;
-        let cmd_ptr: *const [u8] = &*self.cmd;
-        // SAFETY: `app`/`cmd` are boxed (stable addresses) and owned by `self`, so they
-        // live at least as long as `fut`. We never touch or replace them while `fut` is
-        // `Some` (`start` asserts `!busy()`, and `framebuffer`/other access does not reach
-        // them), and wasm is single-threaded — so the future never sees a dangling or
-        // aliased reference. The `'static` erasure is what the borrow checker cannot prove.
-        self.fut = Some(handler(unsafe { &mut *app_ptr }, unsafe { &*cmd_ptr }));
-    }
-
-    /// Advances the in-flight command. `Ready(response)` when it finishes (the driver is
-    /// idle again), `Pending` when it is waiting for input. Returns `Pending` when idle.
-    pub fn poll(&mut self) -> Poll<Vec<u8>> {
-        let Some(fut) = self.fut.as_mut() else {
-            return Poll::Pending;
-        };
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(&waker);
-        match fut.as_mut().poll(&mut cx) {
-            Poll::Ready(resp) => {
-                self.fut = None;
-                Poll::Ready(resp)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
+use crate::app::App;
 
 /// Queues a touch event for the running handler.
 pub fn push_touch(x: u16, y: u16, pressed: bool) {
@@ -134,4 +61,140 @@ pub fn push_quit() {
 pub fn push_ticker() {
     use common::ux::{EventCode, EventData};
     crate::ecalls_wasm::push_event(EventCode::Ticker, EventData::default());
+}
+
+// ===========================================================================
+// Global device — the installed V-App, shared by the co-resident client (which
+// drives it with commands) and the page (which pumps the dashboard between
+// commands). One app per wasm module (architecture A). This is what lets the
+// generic device shell below stay app-independent while a real Rust client,
+// compiled to JS via wasm-bindgen, talks to the same app.
+// ===========================================================================
+
+use core::cell::{Cell, RefCell};
+use wasm_bindgen::prelude::*;
+
+thread_local! {
+    static DEVICE: RefCell<Option<Box<App>>> = const { RefCell::new(None) };
+    // >0 while a client command is in flight, so the idle pump leaves its screen alone.
+    static COMMAND_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Installs the V-App to run in the page. Call once at startup, before any command or tick.
+pub fn install(app: App) {
+    DEVICE.with(|d| *d.borrow_mut() = Some(Box::new(app)));
+}
+
+// A stable raw pointer to the installed app. The borrow is released immediately; callers
+// drive the app through the pointer. Sound because wasm is single-threaded, the app is boxed
+// (stable) and owned by DEVICE for the module's life, and commands never overlap the idle
+// pump (the shell's `tick`/`idle_touch` no-op while a command is in flight).
+fn app_ptr() -> *mut App {
+    DEVICE.with(|d| {
+        let mut g = d.borrow_mut();
+        &mut **g
+            .as_mut()
+            .expect("wasm_runtime::install must be called first") as *mut App
+    })
+}
+
+/// Drives the installed app's handler for one message and returns its response. Suspends as a
+/// real future if the handler awaits on-device input (the page feeds input via the shell, and
+/// the awaiting client resolves as a JS Promise). Used by the co-resident client transport.
+pub async fn dispatch(msg: &[u8]) -> Vec<u8> {
+    let p = app_ptr();
+    // SAFETY: see `app_ptr`. The returned future borrows the app for its lifetime; nothing
+    // else touches the app while a command is in flight.
+    unsafe { (*p).dispatch(msg).await }
+}
+
+/// RAII marker that a client command is in flight, so the page's idle pump doesn't draw the
+/// dashboard over the command's screen. Held across the command's suspensions; `Drop` clears
+/// it even if the command future is dropped/cancelled.
+pub struct CommandGuard(());
+
+impl CommandGuard {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        COMMAND_DEPTH.with(|c| c.set(c.get() + 1));
+        CommandGuard(())
+    }
+}
+
+impl Drop for CommandGuard {
+    fn drop(&mut self) {
+        COMMAND_DEPTH.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
+fn command_active() -> bool {
+    COMMAND_DEPTH.with(|c| c.get() > 0)
+}
+
+// One idle/dashboard step. The caller queues exactly one event first (a ticker or a touch),
+// so `idle_ux_step` consumes it and returns without parking.
+fn idle_step() {
+    let p = app_ptr();
+    // SAFETY: see `app_ptr`; only runs while no command is in flight.
+    crate::executor::block_on(unsafe { (*p).idle_ux_step() });
+}
+
+// ===========================================================================
+// Generic device shell, exposed to JS via wasm-bindgen. App-independent: any
+// V-App gets these for free; only the command bindings are app-specific.
+// ===========================================================================
+
+/// Pointer to the Gray4 framebuffer (one byte per pixel, 0..=15) in wasm memory.
+#[wasm_bindgen(js_name = vappFbPtr)]
+pub fn js_fb_ptr() -> usize {
+    framebuffer_ptr() as usize
+}
+#[wasm_bindgen(js_name = vappFbWidth)]
+pub fn js_fb_width() -> usize {
+    framebuffer_width()
+}
+#[wasm_bindgen(js_name = vappFbHeight)]
+pub fn js_fb_height() -> usize {
+    framebuffer_height()
+}
+#[wasm_bindgen(js_name = vappFbVersion)]
+pub fn js_fb_version() -> f64 {
+    framebuffer_version() as f64
+}
+
+/// Queues a touch for a running command's screen (press then release maps to two calls).
+#[wasm_bindgen(js_name = vappPushTouch)]
+pub fn js_push_touch(x: u32, y: u32, pressed: bool) {
+    push_touch(x as u16, y as u16, pressed);
+}
+
+/// Queues an `Action::Quit` for a running command's event loop.
+#[wasm_bindgen(js_name = vappPushQuit)]
+pub fn js_push_quit() {
+    push_quit();
+}
+
+/// Pumps one tick of the device clock while idle: draws the dashboard and advances its timers
+/// (e.g. the return-to-dashboard countdown after a timed result screen). No-op while a client
+/// command is in flight. The page calls this on a ~100 ms timer.
+#[wasm_bindgen(js_name = vappTick)]
+pub fn js_tick() {
+    if command_active() {
+        return;
+    }
+    push_ticker();
+    idle_step();
+}
+
+/// Feeds a dashboard tap (press + release) while idle — drives its app-info / quit navigation.
+/// No-op while a command is in flight (command screens take taps via `vappPushTouch`).
+#[wasm_bindgen(js_name = vappIdleTouch)]
+pub fn js_idle_touch(x: u32, y: u32) {
+    if command_active() {
+        return;
+    }
+    push_touch(x as u16, y as u16, true);
+    idle_step();
+    push_touch(x as u16, y as u16, false);
+    idle_step();
 }

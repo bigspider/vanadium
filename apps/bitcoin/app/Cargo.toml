@@ -32,7 +32,12 @@ target_wasm = [
     "hashes/target_wasm",
     "secp256k1/target_wasm",
     "base58/target_wasm",
-    "common/target_wasm"
+    "common/target_wasm",
+    # Co-resident host client + wasm-bindgen, so the real BitcoinClient is callable from JS.
+    "dep:vnd-bitcoin-client",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
 ]
 autoapprove = []  # used for integration tests
 fixed_resident_seed = []  # always use a fixed resident seed (only for testing/development)
@@ -47,6 +52,11 @@ secp256k1 = { package = "secp256k1", version = "0.29", default-features = false 
 base58   = { package = "base58ck", version = "0.1", default-features = false }
 
 common = { package = "vnd-bitcoin-common", path = "../common", default-features = false }
+# Co-resident host client + wasm-bindgen glue, only for the wasm32 build (architecture A).
+vnd-bitcoin-client = { path = "../client", default-features = false, features = ["wasm"], optional = true }
+wasm-bindgen = { version = "=0.2.105", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 hex-literal = "0.4.1"
 minicbor = { version = "2.2", default-features = false, features = ["alloc", "derive"] }

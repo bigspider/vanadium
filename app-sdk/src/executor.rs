@@ -173,13 +173,19 @@ pub async fn yield_now() {
 }
 
 /// Returns a future that yields [`Poll::Pending`] exactly once, then completes.
+///
+/// It wakes its own waker before yielding so that a waker-driven executor (e.g.
+/// `wasm-bindgen-futures`, which drives interactive wasm commands) re-polls promptly. The
+/// no-op waker used by [`block_on`] ignores the wake and re-polls regardless, so native
+/// behaviour is unchanged.
 fn pending_once() -> impl Future<Output = ()> {
     let mut yielded = false;
-    core::future::poll_fn(move |_cx| {
+    core::future::poll_fn(move |cx| {
         if yielded {
             Poll::Ready(())
         } else {
             yielded = true;
+            cx.waker().wake_by_ref();
             Poll::Pending
         }
     })

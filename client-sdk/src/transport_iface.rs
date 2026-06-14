@@ -71,10 +71,7 @@ pub trait VAppTransport {
 /// step-driver instead of blocking.
 #[cfg(feature = "wasm")]
 pub struct WasmAppTransport<S = ()> {
-    // Boxed so the app keeps a stable address: the demo grabs `app_ptr()` to pump the app's
-    // idle/dashboard UX (architecture A) while no command is in flight, and that pointer must
-    // survive moving the transport into a `Box<dyn VAppTransport>`.
-    app: Box<app_sdk::App<S>>,
+    app: app_sdk::App<S>,
 }
 
 #[cfg(feature = "wasm")]
@@ -82,16 +79,8 @@ impl<S: Default> WasmAppTransport<S> {
     /// Builds the transport from an `AppBuilder` (the co-resident V-App).
     pub fn new(builder: app_sdk::AppBuilder<S>) -> Self {
         Self {
-            app: Box::new(builder.build_wasm()),
+            app: builder.build_wasm(),
         }
-    }
-
-    /// A stable pointer to the co-resident app, so the runtime can pump its idle/dashboard UX
-    /// (`App::idle_ux_step`) between commands. Sound only single-threaded and never while a
-    /// command is in flight (the transport's `send_message` is then borrowing the same app);
-    /// the caller upholds that, exactly like the step drivers do.
-    pub fn app_ptr(&mut self) -> *mut app_sdk::App<S> {
-        &mut *self.app
     }
 }
 
@@ -100,5 +89,22 @@ impl<S: Default> WasmAppTransport<S> {
 impl<S: Default> VAppTransport for WasmAppTransport<S> {
     async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError> {
         Ok(self.app.dispatch(msg).await)
+    }
+}
+
+/// A [`VAppTransport`] that routes to the single app installed in the page's **global device**
+/// (`app_sdk::wasm_runtime::install`). This is the co-resident transport for architecture A
+/// when the app is shared between the client (commands) and the page (dashboard / idle pump):
+/// a real Rust client — compiled to JS via wasm-bindgen — and the generic device shell drive
+/// the same app. `send_message` suspends as a real future when the app awaits on-device input,
+/// so an interactive command resolves as a JS Promise.
+#[cfg(feature = "wasm")]
+pub struct GlobalDeviceTransport;
+
+#[cfg(feature = "wasm")]
+#[async_trait(?Send)]
+impl VAppTransport for GlobalDeviceTransport {
+    async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError> {
+        Ok(app_sdk::wasm_runtime::dispatch(msg).await)
     }
 }

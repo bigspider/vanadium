@@ -15,21 +15,21 @@ use std::sync::Mutex;
 use common::ux::{EventCode, EventData};
 
 // ---------------------------------------------------------------------------
-// JS host imports — provided by the page (in the `env` module) when instantiating.
-// The explicit `wasm_import_module` makes the linker treat these as wasm imports
-// rather than undefined symbols when they are actually called.
+// Host services via wasm-bindgen: `console` for `print`, the host CSPRNG for randomness, and
+// JS exceptions for `exit`/`fatal`. Nothing is hand-provided in an `env` module — the
+// wasm-bindgen loader supplies every import, so the module is self-contained and the page
+// doesn't wire anything up by hand.
 // ---------------------------------------------------------------------------
-#[link(wasm_import_module = "env")]
-unsafe extern "C" {
-    /// Writes `len` bytes of UTF-8 at `ptr` to the host console.
-    fn host_print(ptr: *const u8, len: usize);
-    /// Fills `len` bytes at `ptr` with cryptographically secure random data
-    /// (e.g. `crypto.getRandomValues`).
-    fn host_random(ptr: *mut u8, len: usize);
-    /// Terminates the V-App with `status`. Never returns.
-    fn host_exit(status: i32) -> !;
-    /// Reports a fatal error (`len` bytes of UTF-8 at `ptr`) and terminates.
-    fn host_fatal(ptr: *const u8, len: usize) -> !;
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+    // `globalThis.crypto.getRandomValues` — present in browsers and Node's webcrypto. With a
+    // `&mut [u8]` it fills the buffer in place.
+    #[wasm_bindgen(js_namespace = ["globalThis", "crypto"], js_name = getRandomValues)]
+    fn get_random_values(buf: &mut [u8]);
 }
 
 // ---------------------------------------------------------------------------
@@ -63,23 +63,47 @@ pub(crate) const NO_EVENT_CODE: u32 = u32::MAX - 1;
 static EVENT_QUEUE: Mutex<std::collections::VecDeque<(EventCode, EventData)>> =
     Mutex::new(std::collections::VecDeque::new());
 
-/// Runtime hook: queue an input event for the next `get_event`.
+/// Waker parked by `next_event` while the queue is empty; woken by `push_event`. This is what
+/// lets an interactive command suspend as a real future (and resolve as a JS Promise) instead
+/// of being polled in a manual loop.
+static EVENT_WAKER: Mutex<Option<core::task::Waker>> = Mutex::new(None);
+
+/// Runtime hook: queue an input event and wake whoever is waiting on `next_event`.
 pub(crate) fn push_event(code: EventCode, data: EventData) {
     EVENT_QUEUE
         .lock()
         .expect("EVENT_QUEUE poisoned")
         .push_back((code, data));
+    if let Some(w) = EVENT_WAKER.lock().expect("EVENT_WAKER poisoned").take() {
+        w.wake();
+    }
+}
+
+/// Async event source for the wasm backend: returns the next queued event, parking the task's
+/// waker when the queue is empty so the future suspends until `push_event` wakes it. Pending
+/// SDK background tasks are advanced on each empty poll (as `block_on` would).
+pub(crate) fn next_event() -> impl core::future::Future<Output = (EventCode, EventData)> {
+    core::future::poll_fn(|cx: &mut core::task::Context<'_>| {
+        if let Some(ev) = EVENT_QUEUE.lock().expect("EVENT_QUEUE poisoned").pop_front() {
+            core::task::Poll::Ready(ev)
+        } else {
+            *EVENT_WAKER.lock().expect("EVENT_WAKER poisoned") = Some(cx.waker().clone());
+            crate::executor::poll_once();
+            core::task::Poll::Pending
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Core I/O
 // ---------------------------------------------------------------------------
 pub fn exit(status: i32) -> ! {
-    unsafe { host_exit(status) }
+    wasm_bindgen::throw_str(&format!("V-App called exit({status})"))
 }
 
 pub unsafe fn fatal(msg: *const u8, size: usize) -> ! {
-    unsafe { host_fatal(msg, size) }
+    let bytes = unsafe { std::slice::from_raw_parts(msg, size) };
+    wasm_bindgen::throw_str(&String::from_utf8_lossy(bytes))
 }
 
 pub unsafe fn xsend(buffer: *const u8, size: usize) {
@@ -101,7 +125,8 @@ pub unsafe fn xrecv(buffer: *mut u8, max_size: usize) -> usize {
 }
 
 pub unsafe fn print(buffer: *const u8, size: usize) {
-    unsafe { host_print(buffer, size) };
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, size) };
+    log(&String::from_utf8_lossy(bytes));
 }
 
 pub unsafe fn get_event(data: *mut EventData) -> u32 {
@@ -135,7 +160,7 @@ pub fn get_device_property(property: u32) -> u32 {
 /// Randomness for the shared crypto module: the JS host's CSPRNG
 /// (`crypto.getRandomValues`). `get_random_bytes` itself is shared (see `ecalls_crypto`).
 pub(crate) fn fill_random(buf: &mut [u8]) {
-    unsafe { host_random(buf.as_mut_ptr(), buf.len()) };
+    get_random_values(buf);
 }
 
 // ---------------------------------------------------------------------------
