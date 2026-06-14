@@ -13,7 +13,11 @@ target_native = []
 target_vanadium_ledger = ["common/target_vanadium_ledger"]
 target_all = ["target_native", "target_vanadium_ledger"]
 
-transport = ["hidapi", "ledger-apdu"]
+# Native transports (HID/TCP) and the VM engine; pulls the native app-sdk backend.
+transport = ["hidapi", "ledger-apdu", "tokio", "goblin", "app-sdk/target_native"]
+# Co-resident client in a web page (wasm32): the transport seam + WasmAppTransport, using
+# the wasm app-sdk backend. No tokio / native transports.
+wasm = ["app-sdk/target_wasm"]
 debug = ["dep:log", "dep:env_logger"]
 
 # Enable metrics collection - requires the Vanadium app to be built with the "metrics" feature
@@ -24,10 +28,9 @@ test-utils = ["transport"]
 
 [dependencies]
 
-# app-sdk is only used for shared types (hash module)
-# We use target_native since the client runs natively, regardless of which features
-# are enabled on this crate.
-app-sdk = { package = "vanadium-app-sdk", path = "../app-sdk", default-features = false, features = ["target_native"] }
+# app-sdk is used for shared types (hash module). Its backend target is selected by the
+# client-sdk feature in use: `transport` -> target_native, `wasm` -> target_wasm.
+app-sdk = { package = "vanadium-app-sdk", path = "../app-sdk", default-features = false }
 
 # If enabled as a feature, the client will load "unpackaged" V-Apps by looking Cargo.toml
 # to reconstruct the manifest. Otherwise, only packaged V-Apps will be loaded.
@@ -35,13 +38,13 @@ cargo_toml = { version = "0.22.1", optional = true }
 
 async-trait = "0.1.81"
 common = { path = "../common", features = ["serde_json"] }
-goblin = "0.8.2"
+goblin = { version = "0.8.2", optional = true }
 hex = "0.4.3"
 hidapi = { version = "2.6.3", optional = true }
 ledger-apdu = { version = "0.11.0", optional = true }
 postcard = { version = "1.1.1", default-features = false, features = ["alloc"] }
 sha2 = "0.10.8"
-tokio = { version = "1.38.1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio = { version = "1.38.1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"], optional = true }
 log = { version = "0.4.27", optional = true }
 env_logger = { version = "0.11", optional = true }
 byteorder = "1.5.0"

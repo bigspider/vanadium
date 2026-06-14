@@ -1,7 +1,17 @@
 // Re-export from the app SDK
 pub use app_sdk::hash;
 
+// The client↔V-App transport seam, transport-independent so it builds on wasm too.
+pub mod transport_iface;
+pub use transport_iface::{VAppExecutionError, VAppTransport};
+#[cfg(feature = "wasm")]
+pub use transport_iface::WasmAppTransport;
+
+// `elf` (loads V-App binaries, uses std::fs) and `memory` are only needed by the native
+// VM engine, so they ride with the `transport` feature and stay out of wasm builds.
+#[cfg(feature = "transport")]
 pub mod elf;
+#[cfg(feature = "transport")]
 pub mod memory;
 
 #[cfg(feature = "transport")]

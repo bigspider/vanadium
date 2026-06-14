@@ -28,6 +28,16 @@
 <canvas id="screen"></canvas>
 <div id="log">loading wasm…</div>
 
+<hr />
+<h2>Client → co-resident V-App (client-sdk in WASM)</h2>
+<p>A second V-App and a Rust client both run in this same wasm module; the client sends a
+   request to the app over <code>WasmAppTransport</code> — no server.</p>
+<p>
+  <input id="creq" value="ping" />
+  <button id="csend" disabled>Client send</button>
+</p>
+<div id="cout"></div>
+
 <script type="module">
 const dec = new TextDecoder();
 const log = (s) => { document.getElementById("log").textContent = s; };
@@ -72,6 +82,22 @@ ex.app_init();
 ex.app_start(0); // empty command -> start the interactive counter
 drive();         // initial draw ("Taps: 0")
 log("ready — click the screen to tap.");
+
+// Client demo: a Rust client driving a co-resident request/response V-App.
+const enc = new TextEncoder();
+ex.client_init();
+const csend = document.getElementById("csend");
+const creq = document.getElementById("creq");
+csend.disabled = false;
+const clientPing = () => {
+  const buf = enc.encode(creq.value);
+  new Uint8Array(mem.buffer, ex.io_ptr(), buf.length).set(buf);
+  const n = ex.client_send(buf.length);
+  document.getElementById("cout").textContent =
+    "app response: " + dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), Number(n)));
+};
+csend.addEventListener("click", clientPing);
+creq.addEventListener("keydown", (e) => { if (e.key === "Enter") clientPing(); });
 
 canvas.addEventListener("pointerdown", (e) => {
   if (done) return;

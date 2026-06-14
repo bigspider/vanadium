@@ -546,6 +546,17 @@ where
         block_on(handler(self, cmd))
     }
 
+    /// Awaits the message handler for a single command, for a co-resident client driving
+    /// the app cooperatively (architecture A). Unlike `dispatch_blocking` this `.await`s
+    /// the handler future inline, so if the handler suspends for user input the suspension
+    /// propagates up through the caller to the JS step-driver. Used by the client-sdk's
+    /// `WasmAppTransport`.
+    #[cfg(feature = "target_wasm")]
+    pub async fn dispatch(&mut self, cmd: &[u8]) -> Vec<u8> {
+        let handler = self.handler;
+        handler(self, cmd).await
+    }
+
     /// This is only useful to produce a valid app instance in tests.
     pub fn singleton() -> Self {
         AppBuilder::new("test_app", "0.0.1", |_app, _msg| {

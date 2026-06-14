@@ -155,3 +155,53 @@ pub extern "C" fn fb_height() -> usize {
 pub extern "C" fn fb_version() -> u64 {
     sdk::wasm_runtime::framebuffer_version()
 }
+
+// ---------------------------------------------------------------------------
+// Co-resident "client" demo: client-sdk's VAppTransport (WasmAppTransport) drives a
+// second, request/response V-App in this same wasm module — no socket. This is the
+// client-sdk running in wasm, exchanging real messages with a co-resident V-App.
+// ---------------------------------------------------------------------------
+use client::{VAppTransport, WasmAppTransport};
+
+/// A trivial request/response V-App for the client demo.
+#[sdk::handler]
+async fn echo_app(_app: &mut App, msg: &[u8]) -> Vec<u8> {
+    let mut out = b"pong:".to_vec();
+    out.extend_from_slice(msg);
+    out
+}
+
+thread_local! {
+    static TRANSPORT: RefCell<Option<WasmAppTransport>> = const { RefCell::new(None) };
+}
+
+#[no_mangle]
+pub extern "C" fn client_init() {
+    TRANSPORT.with(|t| {
+        *t.borrow_mut() = Some(WasmAppTransport::new(AppBuilder::new(
+            "echo-app",
+            env!("CARGO_PKG_VERSION"),
+            echo_app,
+        )));
+    });
+}
+
+/// The client: send `len` request bytes from IO to the co-resident app via the transport,
+/// write the response back into IO, return its length. Request/response (no UI), so the
+/// handler completes in one drive.
+#[no_mangle]
+pub extern "C" fn client_send(len: usize) -> usize {
+    use sdk::executor::block_on;
+    let io = addr_of_mut!(IO) as *mut u8;
+    let req = unsafe { std::slice::from_raw_parts(io, len.min(IO_CAP)) }.to_vec();
+    let resp = TRANSPORT
+        .with(|t| {
+            let mut guard = t.borrow_mut();
+            let transport = guard.as_mut().expect("client_init must be called first");
+            block_on(transport.send_message(&req))
+        })
+        .expect("send_message failed");
+    let n = resp.len().min(IO_CAP);
+    unsafe { std::slice::from_raw_parts_mut(io, n) }.copy_from_slice(&resp[..n]);
+    n
+}

@@ -1103,61 +1103,10 @@ fn parse_metrics_response(result: &[u8]) -> Result<VAppMetrics, VanadiumClientEr
     Ok(metrics)
 }
 
-/// Represents errors that can occur during the execution of a V-App.
-#[derive(Debug)]
-pub enum VAppExecutionError {
-    /// Indicates that no V-App is currently running.
-    VAppNotRunning,
-    /// Indicates that the V-App has panicked with the specific message.
-    AppPanicked(String),
-    /// Indicates that the V-App has exited with the specific status code.
-    /// Useful to handle a graceful exit of the V-App.
-    AppExited(i32),
-    /// Any other error.
-    Other(Box<dyn std::error::Error + Send + Sync>),
-}
-
-impl std::fmt::Display for VAppExecutionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            VAppExecutionError::VAppNotRunning => write!(f, "No V-App is currently running"),
-            VAppExecutionError::AppPanicked(msg) => write!(f, "V-App panicked: {}", msg),
-            VAppExecutionError::AppExited(code) => write!(f, "V-App exited with status {}", code),
-            VAppExecutionError::Other(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl std::error::Error for VAppExecutionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            VAppExecutionError::VAppNotRunning => None,
-            VAppExecutionError::AppPanicked(_) => None,
-            VAppExecutionError::AppExited(_) => None,
-            VAppExecutionError::Other(e) => Some(&**e),
-        }
-    }
-}
-
-/// A trait representing an application that can send messages asynchronously.
-///
-/// This trait defines the behavior for sending messages to an application and
-/// receiving responses.
-#[async_trait]
-pub trait VAppTransport {
-    /// Sends a message to the app and returns the response asynchronously.
-    ///
-    /// # Parameters
-    ///
-    /// - `msg`: A `&[u8]` containing the message to be sent.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the response message as a `Vec<u8>` if the operation is successful,
-    /// or a `VAppExecutionError` if an error occurs.
-
-    async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError>;
-}
+// The transport seam lives in `transport_iface` so it compiles without the native engine
+// (e.g. on wasm); re-exported here for the existing `vanadium_client::{VAppTransport, …}`
+// import paths.
+pub use crate::transport_iface::{VAppExecutionError, VAppTransport};
 
 /// Implementation of a VAppTransport using the Vanadium VM (synchronous version).
 pub struct SyncVanadiumAppClient<E: std::fmt::Debug + Send + Sync + 'static> {
@@ -1460,7 +1409,7 @@ impl<E: std::fmt::Debug + Send + Sync + 'static> SyncVanadiumAppClient<E> {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl<E: std::fmt::Debug + Send + Sync + 'static> VAppTransport for SyncVanadiumAppClient<E> {
     async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError> {
         if !self.client.is_vapp_running() {
@@ -1816,7 +1765,7 @@ impl<E: std::fmt::Debug + Send + Sync + 'static> Drop for VanadiumAppClient<E> {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl<E: std::fmt::Debug + Send + Sync + 'static> VAppTransport for VanadiumAppClient<E> {
     async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError> {
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -1859,7 +1808,7 @@ impl NativeAppClient {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl VAppTransport for NativeAppClient {
     async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError> {
         // ---------- WRITE ----------
@@ -1940,7 +1889,7 @@ impl StandaloneAppClient {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl VAppTransport for StandaloneAppClient {
     async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError> {
         // ---------- WRITE: 4-byte BE length + payload ----------

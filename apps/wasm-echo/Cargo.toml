@@ -8,5 +8,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 sdk = { package = "vanadium-app-sdk", path = "../../app-sdk", default-features = false, features = ["target_wasm"] }
+client = { package = "vanadium-client-sdk", path = "../../client-sdk", default-features = false, features = ["wasm"] }
 
 [workspace]

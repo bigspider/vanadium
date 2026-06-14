@@ -70,6 +70,22 @@ for (const [name, got, want] of checks) {
 if (!allOk) process.exit(1);
 console.log("\nPASS: interactive V-App ran in wasm; crypto (bip32 + k256 + sha2) computed correctly.");
 
+// --- client-sdk in wasm: a co-resident client drives a request/response app ---
+const enc = new TextEncoder();
+ex.client_init();
+function clientSend(str) {
+  const buf = enc.encode(str);
+  new Uint8Array(mem.buffer, ex.io_ptr(), buf.length).set(buf);
+  const n = ex.client_send(buf.length);
+  return dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), Number(n)));
+}
+const creply = clientSend("ping");
+const cok = creply === "pong:ping";
+console.log(`\nclient (WasmAppTransport) -> co-resident app:`);
+console.log(`  client_send("ping") -> ${JSON.stringify(creply)}  ${cok ? "OK" : "MISMATCH (want pong:ping)"}`);
+if (!cok) process.exit(1);
+console.log("\nPASS: client-sdk's VAppTransport ran in wasm and exchanged messages with a co-resident V-App.");
+
 // Minimal grayscale PNG encoder (intensity 0..15 -> 0..255).
 function encodePng(w, h, px) {
   const raw = Buffer.alloc((w * 3 + 1) * h);
