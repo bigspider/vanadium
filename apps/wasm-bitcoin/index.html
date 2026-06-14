@@ -1,8 +1,10 @@
 <!DOCTYPE html>
 <!--
-  Browser demo: the real Bitcoin V-App running entirely in the page as WebAssembly,
-  driven by a co-resident Rust client over the real Bitcoin CBOR protocol — no server,
-  no device. The page runs the GetMasterFingerprint command and shows the result.
+  Browser demo: the real Bitcoin V-App and the real BitcoinClient, co-resident in one wasm
+  module — no server, no device. "Get fingerprint" is a plain request/response; "Get pubkey
+  (on-device confirm)" drives an interactive flow: the app draws a confirmation on the
+  simulated device screen and awaits a tap. Click the rendered buttons (Next / Confirm /
+  Cancel) to drive it — your clicks are fed to the app as touch events.
 
     cargo build --target wasm32-unknown-unknown
     cp target/wasm32-unknown-unknown/debug/wasm_bitcoin.wasm .
@@ -11,27 +13,38 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Bitcoin V-App in WASM — fingerprint demo</title>
+<title>Bitcoin V-App in WASM — interactive demo</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 32px auto; }
-  #fp { font-size: 2rem; font-family: ui-monospace, monospace; margin: 16px 0; }
-  #log { white-space: pre-wrap; color: #555; margin-top: 8px; }
-  button { font: inherit; padding: 6px 14px; }
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 32px auto; }
+  #screen { border: 1px solid #ccc; image-rendering: pixelated; cursor: pointer; height: 480px; }
+  #out { font-family: ui-monospace, monospace; word-break: break-all; margin: 12px 0; min-height: 2.5em; }
+  #log { color: #777; }
+  button { font: inherit; padding: 6px 14px; margin-right: 8px; }
+  .row { display: flex; gap: 24px; align-items: flex-start; }
 </style>
 </head>
 <body>
 <h1>Bitcoin V-App running in WebAssembly</h1>
-<p>The real Bitcoin app's <code>process_message</code> handler runs entirely in your
-   browser. A co-resident Rust client (client-sdk in wasm) sends it a
-   <code>GetMasterFingerprint</code> request over the real CBOR protocol via
-   <code>WasmAppTransport</code> — no server, no device.</p>
-<p><button id="run" disabled>Get master fingerprint</button></p>
-<div id="fp">—</div>
-<div id="log">loading wasm…</div>
+<p>The real Bitcoin app and the real <code>BitcoinClient</code> run co-resident in your
+   browser. The client sends commands over the real CBOR protocol; for commands with
+   on-device confirmation the app draws to the simulated screen and waits — click the
+   rendered <b>Next</b> / <b>Confirm</b> / <b>Cancel</b> buttons to approve or reject.</p>
+<p>
+  <button id="fp">Get fingerprint</button>
+  <button id="xpub">Get pubkey (on-device confirm)</button>
+</p>
+<div class="row">
+  <canvas id="screen"></canvas>
+  <div style="flex:1">
+    <div id="out">—</div>
+    <div id="log">loading wasm…</div>
+  </div>
+</div>
 
 <script type="module">
 const dec = new TextDecoder();
 const log = (s) => { document.getElementById("log").textContent = s; };
+const out = (s) => { document.getElementById("out").textContent = s; };
 
 let mem;
 const env = {
@@ -44,20 +57,69 @@ const env = {
 const { instance } = await WebAssembly.instantiateStreaming(fetch("wasm_bitcoin.wasm"), { env });
 const ex = instance.exports;
 mem = ex.memory;
-
 ex.bitcoin_init();
-const run = document.getElementById("run");
-run.disabled = false;
-log("ready — click to run GetMasterFingerprint in the Bitcoin V-App.");
 
-run.addEventListener("click", () => {
-  const fp = ex.bitcoin_get_fingerprint() >>> 0;
-  const hex = "0x" + fp.toString(16).padStart(8, "0");
-  document.getElementById("fp").textContent = hex;
-  log(fp === 0
-    ? "error: the app returned a zero / error response"
-    : "computed by the real Bitcoin V-App, in wasm.");
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d");
+function paint() {
+  const w = ex.fb_width(), h = ex.fb_height();
+  if (canvas.width !== w) { canvas.width = w; canvas.height = h; }
+  const fb = new Uint8Array(mem.buffer, ex.fb_ptr(), w * h);
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < fb.length; i++) {
+    const v = Math.round((fb[i] * 255) / 15);
+    img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+const readResult = (n) => dec.decode(new Uint8Array(mem.buffer, ex.io_ptr(), Number(n)));
+function showResult(s) {
+  if (s.startsWith("fingerprint:")) out("master fingerprint: 0x" + s.slice(12));
+  else if (s.startsWith("xpub:")) out(s.slice(5));
+  else if (s.startsWith("error:")) out("⚠ " + s.slice(6));
+  else out(s);
+}
+
+let driving = false;
+function pump() {
+  const r = ex.bitcoin_poll(); // BigInt: -1 while awaiting on-device input, else result length
+  paint();
+  if (r !== -1n) {
+    driving = false;
+    showResult(readResult(r));
+    log("done. — click a command to run another.");
+    return;
+  }
+  log("the app is waiting on its screen — click Next / Confirm / Cancel to drive it.");
+  requestAnimationFrame(pump);
+}
+function run(startFn, what) {
+  if (driving) return;
+  driving = true;
+  out("…");
+  log("running " + what + " …");
+  startFn();
+  requestAnimationFrame(pump);
+}
+
+document.getElementById("fp").addEventListener("click",
+  () => run(() => ex.bitcoin_start_get_fingerprint(), "GetMasterFingerprint"));
+document.getElementById("xpub").addEventListener("click",
+  () => run(() => ex.bitcoin_start_get_pubkey(1), "GetExtendedPubkey (with confirm)"));
+
+// Forward canvas clicks to the app as a touch (press + release) at device coordinates.
+canvas.addEventListener("pointerdown", (e) => {
+  if (!driving) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX - rect.left) * canvas.width / rect.width);
+  const y = Math.floor((e.clientY - rect.top) * canvas.height / rect.height);
+  ex.bitcoin_push_touch(x, y, 1);
+  ex.bitcoin_push_touch(x, y, 0);
 });
+
+paint();
+log("ready — click a command.");
 </script>
 </body>
 </html>

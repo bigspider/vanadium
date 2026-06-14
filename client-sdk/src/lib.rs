@@ -7,6 +7,12 @@ pub use transport_iface::{VAppExecutionError, VAppTransport};
 #[cfg(feature = "wasm")]
 pub use transport_iface::WasmAppTransport;
 
+// Cooperative step driver for a co-resident client (wasm32, architecture A).
+#[cfg(feature = "wasm")]
+pub mod wasm_client_driver;
+#[cfg(feature = "wasm")]
+pub use wasm_client_driver::WasmClientDriver;
+
 // `elf` (loads V-App binaries, uses std::fs) and `memory` are only needed by the native
 // VM engine, so they ride with the `transport` feature and stay out of wasm builds.
 #[cfg(feature = "transport")]

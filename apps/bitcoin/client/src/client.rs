@@ -6,13 +6,17 @@ use common::message::{
     Response,
 };
 use common::por::{ProofOfRegistration, RegistrationId};
-use sdk::vanadium_client::{VAppExecutionError, VAppTransport};
+use sdk::{VAppExecutionError, VAppTransport};
 
+// The chunked `comm` protocol (length-prefix + ACKs) is only needed for real transports
+// with a packet limit; the co-resident wasm transport delivers whole messages directly.
+#[cfg(not(feature = "wasm"))]
 use sdk::comm::SendMessageError;
 
 #[derive(Debug)]
 pub enum BitcoinClientError {
     VAppExecutionError(VAppExecutionError),
+    #[cfg(not(feature = "wasm"))]
     SendMessageError(SendMessageError),
     AppError(common::errors::Error), // the V-App returned an error response
     InvalidResponse(String),         // the V-App response was an unexpected type
@@ -25,6 +29,7 @@ impl From<VAppExecutionError> for BitcoinClientError {
     }
 }
 
+#[cfg(not(feature = "wasm"))]
 impl From<SendMessageError> for BitcoinClientError {
     fn from(e: SendMessageError) -> Self {
         Self::SendMessageError(e)
@@ -53,6 +58,7 @@ impl std::fmt::Display for BitcoinClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BitcoinClientError::VAppExecutionError(e) => write!(f, "VAppExecutionError: {}", e),
+            #[cfg(not(feature = "wasm"))]
             BitcoinClientError::SendMessageError(e) => write!(f, "SendMessageError: {}", e),
             BitcoinClientError::AppError(e) => write!(f, "AppError: {}", e),
             BitcoinClientError::InvalidResponse(e) => write!(f, "InvalidResponse: {}", e),
@@ -65,6 +71,7 @@ impl std::error::Error for BitcoinClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             BitcoinClientError::VAppExecutionError(e) => Some(e),
+            #[cfg(not(feature = "wasm"))]
             BitcoinClientError::SendMessageError(e) => Some(e),
             Self::AppError(_) => None,
             BitcoinClientError::InvalidResponse(_) => None,
@@ -73,19 +80,39 @@ impl std::error::Error for BitcoinClientError {
     }
 }
 
+// The native transports run on other threads (`+ Send`); the co-resident wasm transport is
+// single-threaded (its handler future is `?Send`), so the boxed transport drops `Send`.
+#[cfg(not(feature = "wasm"))]
+type BoxedTransport = Box<dyn VAppTransport + Send>;
+#[cfg(feature = "wasm")]
+type BoxedTransport = Box<dyn VAppTransport>;
+
 pub struct BitcoinClient {
-    vapp_transport: Box<dyn VAppTransport + Send>,
+    vapp_transport: BoxedTransport,
 }
 
 impl<'a> BitcoinClient {
-    pub fn new(vapp_transport: Box<dyn VAppTransport + Send>) -> Self {
+    pub fn new(vapp_transport: BoxedTransport) -> Self {
         Self { vapp_transport }
     }
 
+    #[cfg(not(feature = "wasm"))]
     async fn send_message(&mut self, out: &[u8]) -> Result<Vec<u8>, BitcoinClientError> {
         sdk::comm::send_message(&mut self.vapp_transport, out)
             .await
             .map_err(BitcoinClientError::from)
+    }
+
+    /// Co-resident app (architecture A): there is no packet limit, so the whole message is
+    /// handed to the app in one shot. The app's handler runs to its response — or suspends
+    /// for on-device UI, which propagates up through the awaiting client (see
+    /// `WasmClientDriver`).
+    #[cfg(feature = "wasm")]
+    async fn send_message(&mut self, out: &[u8]) -> Result<Vec<u8>, BitcoinClientError> {
+        self.vapp_transport
+            .send_message(out)
+            .await
+            .map_err(BitcoinClientError::VAppExecutionError)
     }
 
     // Parse app response; if the response is a Response::Error, it is converted to BitcoinClientError::AppError.
@@ -117,9 +144,14 @@ impl<'a> BitcoinClient {
                 ));
             }
             Err(e) => match e {
+                #[cfg(not(feature = "wasm"))]
                 BitcoinClientError::SendMessageError(SendMessageError::VAppExecutionError(
                     VAppExecutionError::AppExited(status),
                 )) => Ok(status),
+                #[cfg(feature = "wasm")]
+                BitcoinClientError::VAppExecutionError(VAppExecutionError::AppExited(status)) => {
+                    Ok(status)
+                }
                 e => Err(BitcoinClientError::InvalidResponse(format!(
                     "Unexpected error on exit: {:?}",
                     e

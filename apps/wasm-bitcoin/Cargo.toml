@@ -8,11 +8,14 @@ crate-type = ["cdylib"]
 
 [dependencies]
 sdk = { package = "vanadium-app-sdk", path = "../../app-sdk", default-features = false, features = ["target_wasm"] }
-client = { package = "vanadium-client-sdk", path = "../../client-sdk", default-features = false, features = ["wasm"] }
-# The real Bitcoin V-App (as a library) and its message protocol, built for wasm.
+# The real Bitcoin host client (BitcoinClient) built for wasm: it re-exports the co-resident
+# transport (WasmAppTransport), the cooperative step driver (WasmClientDriver) and the
+# Bitcoin message types.
+client = { package = "vnd-bitcoin-client", path = "../bitcoin/client", default-features = false, features = ["wasm"] }
+# The real Bitcoin V-App (process_message handler), built for wasm and co-resident.
 vnd_bitcoin = { package = "vnd-bitcoin", path = "../bitcoin/app", default-features = false, features = ["target_wasm"] }
-btc_common = { package = "vnd-bitcoin-common", path = "../bitcoin/common", default-features = false, features = ["target_wasm"] }
-minicbor = { version = "2.2", default-features = false, features = ["alloc", "derive"] }
+# For base58check-encoding the returned extended pubkey into an `xpub`/`tpub` string.
+bitcoin = { version = "0.32.0", default-features = false }
 
 [workspace]
 

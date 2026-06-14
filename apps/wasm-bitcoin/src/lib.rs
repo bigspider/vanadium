@@ -1,55 +1,154 @@
-//! The real Bitcoin V-App running in a web page: its `process_message` handler runs in
-//! wasm, driven by a co-resident client that speaks the real Bitcoin CBOR protocol over
-//! client-sdk's `WasmAppTransport` — no server, no device.
+//! The real Bitcoin V-App running in a web page, driven by the **real** `BitcoinClient`
+//! (the same client the CLI uses) — both co-resident in one wasm module, no server, no
+//! device (architecture A).
 //!
-//! Hand-rolled ABI (no wasm-bindgen): `bitcoin_init()` builds the transport once;
-//! `bitcoin_get_fingerprint()` runs the GetMasterFingerprint command end-to-end and
-//! returns the fingerprint.
+//! Two command kinds are exposed, both driven by the cooperative `WasmClientDriver` so JS
+//! keeps the event loop:
+//!   * `bitcoin_start_get_fingerprint()` — request/response, completes in one poll.
+//!   * `bitcoin_start_get_pubkey(display)` — `GetExtendedPubkey`; with `display=1` the app
+//!     draws an on-device confirmation and **awaits a tap**, so the command suspends back to
+//!     JS (which paints the framebuffer and feeds touch input) until the user approves or
+//!     rejects.
+//!
+//! Hand-rolled ABI (no wasm-bindgen):
+//!   * `bitcoin_init()` builds the client+driver once.
+//!   * `bitcoin_start_*` begin a command (none in flight).
+//!   * `bitcoin_poll()` advances it: -1 while waiting for input, else the result length
+//!     (a UTF-8 string written into `IO`: `fingerprint:<hex>`, `xpub:<base58>` or `error:<msg>`).
+//!   * `bitcoin_push_touch` / `bitcoin_push_quit` queue input events.
+//!   * `fb_*` expose the framebuffer for the page to paint to a <canvas>.
 
 extern crate alloc;
 
+use core::ptr::addr_of_mut;
+use core::task::Poll;
 use std::cell::RefCell;
 
-use sdk::executor::block_on;
+use sdk::wasm_runtime;
 use sdk::AppBuilder;
 
-use client::{VAppTransport, WasmAppTransport};
+use client::message::KeyTree;
+use client::{BitcoinClient, WasmAppTransport, WasmClientDriver};
 
-use btc_common::message::{KeyTree, Request, Response};
+const IO_CAP: usize = 16 * 1024;
+static mut IO: [u8; IO_CAP] = [0; IO_CAP];
 
 thread_local! {
-    static TRANSPORT: RefCell<Option<WasmAppTransport>> = const { RefCell::new(None) };
+    static DRIVER: RefCell<Option<WasmClientDriver<BitcoinClient>>> = const { RefCell::new(None) };
 }
 
 #[no_mangle]
 pub extern "C" fn bitcoin_init() {
-    TRANSPORT.with(|t| {
-        *t.borrow_mut() = Some(WasmAppTransport::new(AppBuilder::new(
-            "Bitcoin",
-            env!("CARGO_PKG_VERSION"),
-            vnd_bitcoin::process_message,
-        )));
+    // The co-resident Bitcoin V-App, wrapped as a client transport, wrapped in the real
+    // BitcoinClient, driven cooperatively.
+    let transport = WasmAppTransport::new(AppBuilder::new(
+        "Bitcoin",
+        env!("CARGO_PKG_VERSION"),
+        vnd_bitcoin::process_message,
+    ));
+    let btc_client = BitcoinClient::new(Box::new(transport));
+    DRIVER.with(|d| *d.borrow_mut() = Some(WasmClientDriver::new(btc_client)));
+}
+
+/// Begin `GetMasterFingerprint` (no UI; completes in one poll).
+#[no_mangle]
+pub extern "C" fn bitcoin_start_get_fingerprint() {
+    DRIVER.with(|d| {
+        d.borrow_mut()
+            .as_mut()
+            .expect("bitcoin_init must be called first")
+            .start(|client| {
+                Box::pin(async move {
+                    match client.get_master_fingerprint(KeyTree::Standard).await {
+                        Ok(fp) => alloc::format!("fingerprint:{fp:08x}").into_bytes(),
+                        Err(e) => alloc::format!("error:{e}").into_bytes(),
+                    }
+                })
+            })
     });
 }
 
-/// The client: encode a `GetMasterFingerprint` request, send it to the co-resident Bitcoin
-/// app over the transport, decode the response, and return the fingerprint (0 on error).
-/// Pure request/response (no UI), so it completes in one drive.
+/// Begin `GetExtendedPubkey` at `m/84'/1'/0'`. With `display != 0` the app shows an on-device
+/// confirmation and awaits a tap, so the command drives the interactive step loop.
 #[no_mangle]
-pub extern "C" fn bitcoin_get_fingerprint() -> u32 {
-    let req = Request::GetMasterFingerprint {
-        tree: KeyTree::Standard,
-    };
-    let req_bytes = minicbor::to_vec(&req).expect("encode request");
-    let resp_bytes = TRANSPORT
-        .with(|t| {
-            let mut guard = t.borrow_mut();
-            let transport = guard.as_mut().expect("bitcoin_init must be called first");
-            block_on(transport.send_message(&req_bytes))
-        })
-        .expect("send_message failed");
-    match minicbor::decode::<Response>(&resp_bytes) {
-        Ok(Response::MasterFingerprint { fingerprint }) => fingerprint,
-        _ => 0,
-    }
+pub extern "C" fn bitcoin_start_get_pubkey(display: u32) {
+    let display = display != 0;
+    DRIVER.with(|d| {
+        d.borrow_mut()
+            .as_mut()
+            .expect("bitcoin_init must be called first")
+            .start(move |client| {
+                Box::pin(async move {
+                    match client
+                        .get_extended_pubkey(KeyTree::Standard, "m/84'/1'/0'", display, None)
+                        .await
+                    {
+                        Ok((xpub, _sig)) => {
+                            let s = bitcoin::base58::encode_check(&xpub);
+                            alloc::format!("xpub:{s}").into_bytes()
+                        }
+                        Err(e) => alloc::format!("error:{e}").into_bytes(),
+                    }
+                })
+            })
+    });
+}
+
+/// Advance the in-flight command: -1 while it waits for on-device input, else the result
+/// length (a UTF-8 string written into `IO`).
+#[no_mangle]
+pub extern "C" fn bitcoin_poll() -> i64 {
+    DRIVER.with(|d| {
+        match d
+            .borrow_mut()
+            .as_mut()
+            .expect("bitcoin_init must be called first")
+            .poll()
+        {
+            Poll::Ready(out) => {
+                let n = out.len().min(IO_CAP);
+                let io = addr_of_mut!(IO) as *mut u8;
+                // SAFETY: single-threaded wasm; JS only reads IO between our calls.
+                unsafe { std::slice::from_raw_parts_mut(io, n) }.copy_from_slice(&out[..n]);
+                n as i64
+            }
+            Poll::Pending => -1,
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn io_ptr() -> *mut u8 {
+    addr_of_mut!(IO) as *mut u8
+}
+#[no_mangle]
+pub extern "C" fn io_cap() -> usize {
+    IO_CAP
+}
+
+#[no_mangle]
+pub extern "C" fn bitcoin_push_touch(x: u32, y: u32, pressed: u32) {
+    wasm_runtime::push_touch(x as u16, y as u16, pressed != 0);
+}
+#[no_mangle]
+pub extern "C" fn bitcoin_push_quit() {
+    wasm_runtime::push_quit();
+}
+
+// --- framebuffer accessors for the page (paints it to a <canvas>) ---
+#[no_mangle]
+pub extern "C" fn fb_ptr() -> *const u8 {
+    wasm_runtime::framebuffer_ptr()
+}
+#[no_mangle]
+pub extern "C" fn fb_width() -> usize {
+    wasm_runtime::framebuffer_width()
+}
+#[no_mangle]
+pub extern "C" fn fb_height() -> usize {
+    wasm_runtime::framebuffer_height()
+}
+#[no_mangle]
+pub extern "C" fn fb_version() -> u64 {
+    wasm_runtime::framebuffer_version()
 }
