@@ -2,17 +2,8 @@
 
 extern crate alloc;
 
-use sdk::AppBuilder;
-
 sdk::bootstrap!();
 
 pub fn main() {
-    AppBuilder::new(
-        "Bitcoin",
-        env!("CARGO_PKG_VERSION"),
-        vnd_bitcoin::process_message,
-    )
-    .description("Bitcoin is ready")
-    .developer("Salvatore Ingala")
-    .run();
+    vnd_bitcoin::app_builder().run();
 }

@@ -69,29 +69,6 @@ pub trait VAppTransport {
 /// client (architecture A): `send_message` runs the app's handler directly — no socket —
 /// and `.await`s it, so a handler that waits for user input suspends back to the JS
 /// step-driver instead of blocking.
-#[cfg(feature = "wasm")]
-pub struct WasmAppTransport<S = ()> {
-    app: app_sdk::App<S>,
-}
-
-#[cfg(feature = "wasm")]
-impl<S: Default> WasmAppTransport<S> {
-    /// Builds the transport from an `AppBuilder` (the co-resident V-App).
-    pub fn new(builder: app_sdk::AppBuilder<S>) -> Self {
-        Self {
-            app: builder.build_wasm(),
-        }
-    }
-}
-
-#[cfg(feature = "wasm")]
-#[async_trait(?Send)]
-impl<S: Default> VAppTransport for WasmAppTransport<S> {
-    async fn send_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, VAppExecutionError> {
-        Ok(self.app.dispatch(msg).await)
-    }
-}
-
 /// A [`VAppTransport`] that routes to the single app installed in the page's **global device**
 /// (`app_sdk::wasm_runtime::install`). This is the co-resident transport for architecture A
 /// when the app is shared between the client (commands) and the page (dashboard / idle pump):

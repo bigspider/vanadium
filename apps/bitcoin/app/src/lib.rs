@@ -17,8 +17,15 @@ use handlers::*;
 use alloc::vec::Vec;
 
 use common::message::{Request, Response};
-use sdk::App;
+use sdk::{App, AppBuilder};
 
+/// The app's identity + handler, shared by the native/riscv binary (`main.rs`) and the wasm
+/// web entry (`wasm.rs`) so the name/description/developer live in exactly one place.
+pub fn app_builder() -> AppBuilder {
+    AppBuilder::new("Bitcoin", env!("CARGO_PKG_VERSION"), process_message)
+        .description("Bitcoin is ready")
+        .developer("Salvatore Ingala")
+}
 
 pub async fn handle_request(
     app: &mut App,

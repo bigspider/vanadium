@@ -15,7 +15,6 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 use sdk::wasm_runtime::{self, CommandGuard};
-use sdk::AppBuilder;
 
 use vnd_bitcoin_client::message::KeyTree;
 use vnd_bitcoin_client::{BitcoinClient, GlobalDeviceTransport};
@@ -34,12 +33,7 @@ impl BitcoinApp {
     /// Installs the Bitcoin V-App into the page's global device and builds the client over it.
     #[wasm_bindgen(constructor)]
     pub fn new() -> BitcoinApp {
-        wasm_runtime::install(
-            AppBuilder::new("Bitcoin", env!("CARGO_PKG_VERSION"), crate::process_message)
-                .description("Bitcoin is ready")
-                .developer("Salvatore Ingala")
-                .build_wasm(),
-        );
+        wasm_runtime::install(crate::app_builder().build_wasm());
         BitcoinApp {
             client: Rc::new(RefCell::new(BitcoinClient::new(Box::new(
                 GlobalDeviceTransport,

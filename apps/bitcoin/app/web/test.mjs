@@ -24,6 +24,11 @@ async function driveWithTaps(promise, x, y) {
   return { res, err };
 }
 
+// 0) Crypto + RNG path: BIP340 schnorr sign x2 (aux randomness from crypto.getRandomValues)
+//    + verify both. Proves signing and randomness work in wasm (the commands below are
+//    deterministic and never touch the RNG).
+check(wb.vappCryptoSelfTest(), "crypto self-test (schnorr sign/verify + getRandomValues) passes");
+
 const app = new wb.BitcoinApp();
 
 // 1) Request/response — the real BitcoinClient.get_master_fingerprint, as a JS Promise.

@@ -209,3 +209,20 @@ pub fn js_idle_touch(x: u32, y: u32) {
     push_touch(x as u16, y as u16, false);
     idle_step();
 }
+
+/// Self-test for the wasm crypto + RNG path: signs a message twice with BIP-340 Schnorr —
+/// whose auxiliary randomness comes from the JS host's `crypto.getRandomValues` — and verifies
+/// both. Returns true iff both verify *and* differ (proving randomness actually flows). The
+/// deterministic commands (fingerprint, xpub) never touch the RNG, so this is what confirms
+/// signing works end to end in the browser.
+#[wasm_bindgen(js_name = vappCryptoSelfTest)]
+pub fn js_crypto_self_test() -> bool {
+    use crate::curve::{EcfpPrivateKey, Secp256k1, ToPublicKey};
+    let sk = EcfpPrivateKey::<Secp256k1, 32>::new([7u8; 32]);
+    let pk = sk.to_public_key();
+    let msg = b"vanadium wasm crypto self-test";
+    let (Ok(s1), Ok(s2)) = (sk.schnorr_sign(msg, None), sk.schnorr_sign(msg, None)) else {
+        return false;
+    };
+    s1 != s2 && pk.schnorr_verify(msg, &s1).is_ok() && pk.schnorr_verify(msg, &s2).is_ok()
+}

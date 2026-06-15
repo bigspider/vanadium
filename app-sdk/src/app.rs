@@ -549,8 +549,8 @@ where
     /// Awaits the message handler for a single command, for a co-resident client driving
     /// the app cooperatively (architecture A). Unlike `dispatch_blocking` this `.await`s
     /// the handler future inline, so if the handler suspends for user input the suspension
-    /// propagates up through the caller to the JS step-driver. Used by the client-sdk's
-    /// `WasmAppTransport`.
+    /// propagates up to whoever is driving (wasm-bindgen-futures), resolving the command's JS
+    /// Promise. Reached via `wasm_runtime::dispatch` / client-sdk's `GlobalDeviceTransport`.
     #[cfg(feature = "target_wasm")]
     pub async fn dispatch(&mut self, cmd: &[u8]) -> Vec<u8> {
         let handler = self.handler;

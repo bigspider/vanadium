@@ -337,6 +337,49 @@ jobs:
       models_json: '["nanox","nanosplus","flex","stax","apex_p"]'
       cargo_test_features: 'speculos-tests,debug'
 
+  # Build the Bitcoin app to wasm (wasm-bindgen) and run the in-browser client test in Node:
+  # the real BitcoinClient driving the real V-App co-resident in one module.
+  test_vnd_bitcoin_wasm:
+    name: Bitcoin V-App in wasm (wasm-bindgen)
+    runs-on: ubuntu-latest
+    env:
+      WASM_BINDGEN_VERSION: "0.2.105"
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Cache cargo dirs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/bitcoin/app/target
+          key: ${{ runner.os }}-cargo-wasm-bitcoin-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-bitcoin-
+      - name: Install wasm-bindgen-cli (prebuilt, version-matched)
+        run: |
+          ver="$WASM_BINDGEN_VERSION"
+          name="wasm-bindgen-${ver}-x86_64-unknown-linux-musl"
+          curl -sSL "https://github.com/rustwasm/wasm-bindgen/releases/download/${ver}/${name}.tar.gz" -o /tmp/wb.tar.gz
+          tar xzf /tmp/wb.tar.gz -C /tmp
+          sudo mv "/tmp/${name}/wasm-bindgen" /usr/local/bin/
+          wasm-bindgen --version
+      - name: Build wasm + bindings
+        working-directory: apps/bitcoin/app
+        run: ./web/build.sh
+      - name: Run the in-browser client test
+        working-directory: apps/bitcoin/app/web
+        run: node test.mjs
+
   ## vnd-rps
   build_vnd_rps:
     uses: ./.github/workflows/reusable_vapp_build.yaml

@@ -5,7 +5,7 @@ pub use app_sdk::hash;
 pub mod transport_iface;
 pub use transport_iface::{VAppExecutionError, VAppTransport};
 #[cfg(feature = "wasm")]
-pub use transport_iface::{GlobalDeviceTransport, WasmAppTransport};
+pub use transport_iface::GlobalDeviceTransport;
 
 // `elf` (loads V-App binaries, uses std::fs) and `memory` are only needed by the native
 // VM engine, so they ride with the `transport` feature and stay out of wasm builds.
