@@ -123,15 +123,14 @@ $("idk").addEventListener("click",
 
 $("register").addEventListener("click",
   command("registerAccount", () => app.registerAccount(name(), tpl(), keys(), false), (r) => {
-    const o = JSON.parse(r);
-    $("por").value = o.hmac; // fill the proof of registration for getAddress / signPsbt
-    return "account id: " + o.id + "\nproof of registration: " + o.hmac;
+    $("por").value = r.hmac; // fill the proof of registration for getAddress / signPsbt
+    return "account id: " + r.id + "\nproof of registration: " + r.hmac;
   }));
 $("address").addEventListener("click",
   command("getAddress", () => app.getAddress(tpl(), keys(), name(), false, 0, por(), false)));
 $("sign").addEventListener("click",
   command("signPsbt", () => app.signPsbt($("psbt").value, tpl(), keys(), name(), por()),
-    (r) => JSON.stringify(JSON.parse(r), null, 2)));
+    (sigs) => sigs.map((s) => `input ${s.inputIndex}\n  pubkey:    ${s.pubkey}\n  signature: ${s.signature}`).join("\n")));
 </script>
 </body>
 </html>

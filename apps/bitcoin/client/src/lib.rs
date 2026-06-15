@@ -2,7 +2,7 @@ extern crate bitcoin;
 
 mod client;
 
-pub use client::BitcoinClient;
+pub use client::{BitcoinClient, BitcoinClientError};
 
 // Re-export from the sdk. The native CLI helpers (`client_utils`, HID/TCP transports) live
 // behind client-sdk's `transport` feature; on wasm only the transport-independent trait and

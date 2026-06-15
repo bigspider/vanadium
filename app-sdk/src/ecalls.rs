@@ -23,8 +23,14 @@ macro_rules! forward_to_ecall {
         $(
             $(#[$meta])*
             #[inline(always)]
+            // A few backends implement some of these ECALLs as safe fns, so the block is
+            // unnecessary there — allow that rather than special-casing per backend.
+            #[allow(unused_unsafe)]
             pub unsafe fn $name($($arg : $ty),*) $(-> $ret)? {
-                ecalls_module::$name($($arg),*)
+                // SAFETY: forwards to the backend ECALL with the same contract, which the
+                // caller of this `unsafe fn` upholds. The explicit block satisfies
+                // edition-2024's `unsafe_op_in_unsafe_fn`.
+                unsafe { ecalls_module::$name($($arg),*) }
             }
         )*
     }
