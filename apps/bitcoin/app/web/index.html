@@ -14,28 +14,62 @@
 <meta charset="utf-8" />
 <title>Bitcoin V-App in WASM — real client via wasm-bindgen</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 920px; margin: 32px auto; }
+  body { font-family: system-ui, sans-serif; max-width: 1040px; margin: 32px auto; }
   /* Native device resolution (480x600), 1:1 so text stays crisp. */
   #screen { border: 1px solid #ccc; width: 480px; height: 600px; flex: none; image-rendering: pixelated; cursor: pointer; }
-  #out { font-family: ui-monospace, monospace; word-break: break-all; margin: 12px 0; min-height: 2.5em; }
+  #out { font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; margin: 12px 0; min-height: 2.5em; }
   #log { color: #777; }
-  button { font: inherit; padding: 6px 14px; margin-right: 8px; }
+  button { font: inherit; padding: 6px 12px; margin: 2px 4px 2px 0; }
   .row { display: flex; gap: 24px; align-items: flex-start; }
+  fieldset { margin: 0 0 12px; border: 1px solid #ddd; border-radius: 6px; }
+  legend { color: #555; font-size: 0.85em; padding: 0 6px; }
+  label { display: block; font-size: 0.85em; color: #555; margin-top: 6px; }
+  input, textarea { font: inherit; width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 0.85em; }
+  textarea { resize: vertical; }
 </style>
 </head>
 <body>
 <h1>Bitcoin V-App running in WebAssembly</h1>
 <p>The real Bitcoin app and the real <code>BitcoinClient</code> are compiled to one wasm module;
-   the client is callable from JS via wasm-bindgen — <code>await app.getExtendedPubkey(...)</code>.
-   For commands with on-device confirmation the app draws to the simulated screen and waits —
-   tap the rendered <b>Next</b> / <b>Confirm</b> / <b>Cancel</b> buttons.</p>
-<p>
-  <button id="fp">app.getMasterFingerprint()</button>
-  <button id="xpub">app.getExtendedPubkey() with confirm</button>
-</p>
+   every command is a JS method via wasm-bindgen — <code>await app.getAddress(...)</code>. For
+   commands with on-device confirmation, tap the rendered <b>Next</b> / <b>Confirm</b> /
+   <b>Cancel</b> buttons. The fields are pre-filled with a working example.</p>
+
 <div class="row">
-  <canvas id="screen"></canvas>
-  <div style="flex:1">
+  <div style="flex:none">
+    <canvas id="screen"></canvas>
+  </div>
+  <div style="flex:1; min-width:0">
+    <fieldset>
+      <legend>keys</legend>
+      <button id="fp">getMasterFingerprint</button>
+      <button id="xpub">getExtendedPubkey (confirm)</button>
+      <button id="idk">getIdentityKey</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>wallet policy (BIP-388)</legend>
+      <label>descriptor template</label>
+      <input id="tpl" value="wpkh(@0/**)" />
+      <label>keys info (one per line)</label>
+      <textarea id="keys" rows="2">[f5acc2fd/84'/1'/0']tpubDCtKfsNyRhULjZ9XMS4VKKtVcPdVDi8MKUbcSD9MJDyjRu1A2ND5MiipozyyspBT9bg8upEp7a8EAgFxNxXn1d7QkdbL52Ty5jiSLcxPt1P</textarea>
+      <label>account name</label>
+      <input id="name" value="Segwit account" />
+      <div style="margin-top:8px">
+        <button id="register">registerAccount (confirm)</button>
+        <button id="address">getAddress</button>
+      </div>
+      <label>proof of registration (from registerAccount; used by getAddress / signPsbt)</label>
+      <input id="por" placeholder="register an account to fill this" />
+    </fieldset>
+
+    <fieldset>
+      <legend>sign</legend>
+      <label>PSBT (base64, v0)</label>
+      <textarea id="psbt" rows="3">cHNidP8BAHQCAAAAAXoqmXlWwJ+Op/0oGcGph7sU4iv5rc2vIKiXY3Is7uJkAQAAAAD9////AqC7DQAAAAAAGXapFDRKD0jKFQ7CuQOBdmC5tosTpnAmiKx0OCMAAAAAABYAFOs4+puBKPgfJule2wxf+uqDaQ/kAAAAAAABAH0CAAAAAa+/rgZZD3Qf8a9ZtqxGESYzakxKgttVPfb++rc3rDPzAQAAAAD9////AnARAQAAAAAAIgAg/e5EHFblsG0N+CwSTHBwFKXKGWWL4LmFa8oW8e0yWfel9DAAAAAAABYAFDr4QprVlUql7oozyYP9ih6GeZJLAAAAAAEBH6X0MAAAAAAAFgAUOvhCmtWVSqXuijPJg/2KHoZ5kksiBgPuLD2Y6x+TwKGqjlpACbcOt7ROrRXxZm8TawEq1Y0waBj1rML9VAAAgAEAAIAAAACAAQAAAAgAAAAAACICAinsR3JxMe0liKIMRu2pq7fapvSf1Quv5wucWqaWHE7MGPWswv1UAACAAQAAgAAAAIABAAAACgAAAAA=</textarea>
+      <button id="sign">signPsbt (confirm)</button>
+    </fieldset>
+
     <div id="out">—</div>
     <div id="log">loading wasm…</div>
   </div>
@@ -50,34 +84,54 @@ import { DeviceShell } from "./device-shell.mjs";
 
 const log = (s) => { document.getElementById("log").textContent = s; };
 const out = (s) => { document.getElementById("out").textContent = s; };
+const $ = (id) => document.getElementById(id);
 
 await init();
 const api = { vappFramebuffer, vappFbWidth, vappFbHeight, vappTick, vappPushTouch, vappIdleTouch };
 
-const shell = new DeviceShell(api, document.getElementById("screen"));
+const shell = new DeviceShell(api, $("screen"));
 shell.onstop = (e) => log("App stopped: " + (e && e.message ? e.message : String(e)) + " — reload to restart.");
 shell.start();
 
 const app = new BitcoinApp(); // installs the V-App into the page's device
 log("ready — run a command, or interact with the dashboard.");
 
-document.getElementById("fp").addEventListener("click", async () => {
-  out("…"); log("running getMasterFingerprint …");
-  try {
-    const fp = await shell.run(app.getMasterFingerprint());
-    out("master fingerprint: 0x" + (fp >>> 0).toString(16));
-    log("done.");
-  } catch (e) { out("⚠ " + (e && e.message ? e.message : e)); log("done."); }
-});
+// Wraps a command: pause the idle pump while it runs, show the result (or error). `present`
+// formats the resolved value for display.
+function command(label, build, present) {
+  return async () => {
+    out("…"); log("running " + label + " — confirm on the device screen if it asks …");
+    try {
+      const r = await shell.run(build());
+      out(present ? present(r) : String(r));
+      log("done.");
+    } catch (e) {
+      out("⚠ " + (e && e.message ? e.message : e));
+      log("done.");
+    }
+  };
+}
 
-document.getElementById("xpub").addEventListener("click", async () => {
-  out("…"); log("running getExtendedPubkey — confirm on the device screen …");
-  try {
-    const xpub = await shell.run(app.getExtendedPubkey("m/84'/1'/0'", true));
-    out(xpub);
-    log("done.");
-  } catch (e) { out("⚠ " + (e && e.message ? e.message : e)); log("done."); }
-});
+const tpl = () => $("tpl").value, keys = () => $("keys").value, name = () => $("name").value, por = () => $("por").value;
+
+$("fp").addEventListener("click",
+  command("getMasterFingerprint", () => app.getMasterFingerprint(), (fp) => "master fingerprint: 0x" + (fp >>> 0).toString(16)));
+$("xpub").addEventListener("click",
+  command("getExtendedPubkey", () => app.getExtendedPubkey("m/84'/1'/0'", true)));
+$("idk").addEventListener("click",
+  command("getIdentityKey", () => app.getIdentityKey(-1, false)));
+
+$("register").addEventListener("click",
+  command("registerAccount", () => app.registerAccount(name(), tpl(), keys(), false), (r) => {
+    const o = JSON.parse(r);
+    $("por").value = o.hmac; // fill the proof of registration for getAddress / signPsbt
+    return "account id: " + o.id + "\nproof of registration: " + o.hmac;
+  }));
+$("address").addEventListener("click",
+  command("getAddress", () => app.getAddress(tpl(), keys(), name(), false, 0, por(), false)));
+$("sign").addEventListener("click",
+  command("signPsbt", () => app.signPsbt($("psbt").value, tpl(), keys(), name(), por()),
+    (r) => JSON.stringify(JSON.parse(r), null, 2)));
 </script>
 </body>
 </html>

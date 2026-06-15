@@ -38,6 +38,7 @@ target_wasm = [
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
     "dep:js-sys",
+    "dep:base64",
 ]
 autoapprove = []  # used for integration tests
 fixed_resident_seed = []  # always use a fixed resident seed (only for testing/development)
@@ -57,6 +58,7 @@ vnd-bitcoin-client = { path = "../client", default-features = false, features = 
 wasm-bindgen = { version = "=0.2.105", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"], optional = true }
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 hex-literal = "0.4.1"
 minicbor = { version = "2.2", default-features = false, features = ["alloc", "derive"] }

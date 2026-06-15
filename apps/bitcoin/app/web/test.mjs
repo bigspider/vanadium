@@ -48,7 +48,43 @@ console.log("getExtendedPubkey(reject) ->", rejected.res || rejected.err);
 check(rejected.res === undefined && /reject/i.test(rejected.err || ""),
   "rejecting on-device rejects the Promise with a UserRejected error");
 
+// A BIP-388 single-sig wallet policy on the default test seed (master fpr f5acc2fd).
+const WP_TEMPLATE = "wpkh(@0/**)";
+const WP_KEYS = "[f5acc2fd/84'/1'/0']tpubDCtKfsNyRhULjZ9XMS4VKKtVcPdVDi8MKUbcSD9MJDyjRu1A2ND5MiipozyyspBT9bg8upEp7a8EAgFxNxXn1d7QkdbL52Ty5jiSLcxPt1P";
+const NAME = "Segwit account";
+
+// 4) getIdentityKey (non-interactive).
+const idk = await app.getIdentityKey(-1, false);
+console.log("getIdentityKey ->", idk);
+check(typeof idk === "string" && idk.startsWith("tpub"), "getIdentityKey returns an extended pubkey");
+
+// 5) registerAccount (interactive approve) -> proof of registration; then getAddress (no UI)
+//    returns the known address for (is_change=false, index=0).
+const reg = await driveWithTaps(app.registerAccount(NAME, WP_TEMPLATE, WP_KEYS, false), 399, 568);
+const regObj = reg.res ? JSON.parse(reg.res) : null;
+console.log("registerAccount ->", reg.res || reg.err);
+check(regObj && /^[0-9a-f]{64}$/.test(regObj.hmac), "registerAccount returns a 32-byte proof of registration");
+
+const addr = await app.getAddress(WP_TEMPLATE, WP_KEYS, NAME, false, 0, regObj ? regObj.hmac : "", false);
+console.log("getAddress ->", addr);
+check(addr === "tb1qzdr7s2sr0dwmkwx033r4nujzk86u0cy6fmzfjk", "getAddress returns the expected address");
+
+// 6) registerIdentityKey (interactive approve) with the secp256k1 generator as a sample pubkey.
+const GEN = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+const rik = await driveWithTaps(app.registerIdentityKey("My key", GEN), 399, 568);
+const rikObj = rik.res ? JSON.parse(rik.res) : null;
+console.log("registerIdentityKey ->", rik.res || rik.err);
+check(rikObj && /^[0-9a-f]{64}$/.test(rikObj.hmac), "registerIdentityKey returns a 32-byte proof of registration");
+
+// 7) signPsbt (interactive approve): a single-sig wpkh PSBT signed with the policy registered
+//    above (its proof of registration authorizes the device's inputs).
+const PSBT = "cHNidP8BAHQCAAAAAXoqmXlWwJ+Op/0oGcGph7sU4iv5rc2vIKiXY3Is7uJkAQAAAAD9////AqC7DQAAAAAAGXapFDRKD0jKFQ7CuQOBdmC5tosTpnAmiKx0OCMAAAAAABYAFOs4+puBKPgfJule2wxf+uqDaQ/kAAAAAAABAH0CAAAAAa+/rgZZD3Qf8a9ZtqxGESYzakxKgttVPfb++rc3rDPzAQAAAAD9////AnARAQAAAAAAIgAg/e5EHFblsG0N+CwSTHBwFKXKGWWL4LmFa8oW8e0yWfel9DAAAAAAABYAFDr4QprVlUql7oozyYP9ih6GeZJLAAAAAAEBH6X0MAAAAAAAFgAUOvhCmtWVSqXuijPJg/2KHoZ5kksiBgPuLD2Y6x+TwKGqjlpACbcOt7ROrRXxZm8TawEq1Y0waBj1rML9VAAAgAEAAIAAAACAAQAAAAgAAAAAACICAinsR3JxMe0liKIMRu2pq7fapvSf1Quv5wucWqaWHE7MGPWswv1UAACAAQAAgAAAAIABAAAACgAAAAA=";
+const sp = await driveWithTaps(app.signPsbt(PSBT, WP_TEMPLATE, WP_KEYS, NAME, regObj ? regObj.hmac : ""), 399, 568);
+const spObj = sp.res ? JSON.parse(sp.res) : null;
+console.log("signPsbt ->", sp.res || sp.err);
+check(spObj && Array.isArray(spObj.signatures) && spObj.signatures.length >= 1, "signPsbt returns at least one signature");
+
 console.log(failed
   ? "\nFAIL"
-  : "\nPASS: the real BitcoinClient, compiled to JS via wasm-bindgen, drove the real Bitcoin V-App — request/response and interactive on-device confirmation.");
+  : "\nPASS: the real BitcoinClient, compiled to JS via wasm-bindgen, drove the real Bitcoin V-App — fingerprint, pubkey, identity key, register account, get address, register identity key, and sign PSBT.");
 process.exit(failed ? 1 : 0);
